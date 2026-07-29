@@ -18,8 +18,10 @@ import threading
 import subprocess
 import tempfile
 import shutil
+import textwrap
 import requests
 from flask import Flask, request, jsonify
+from PIL import Image, ImageDraw, ImageFont
 
 app = Flask(__name__)
 
@@ -42,6 +44,14 @@ CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "caricatur
 # Ancho/alto del Short (vertical 9:16)
 ANCHO = 1080
 ALTO = 1920
+
+# Tamaño estándar de miniatura de YouTube (horizontal 16:9), independiente
+# de que el video en sí sea vertical.
+ANCHO_MINIATURA = 1280
+ALTO_MINIATURA = 720
+RUTA_FUENTE_MINIATURA = os.path.join(os.path.dirname(__file__), "Anton-Regular.ttf")
+COLOR_FRANJA_MINIATURA = (20, 20, 20)       # franja casi negra
+COLOR_TEXTO_MINIATURA = (255, 210, 60)      # amarillo/dorado, alto contraste
 
 # Estado de jobs en memoria (simple, como en Bienestar Diario)
 jobs = {}
@@ -166,10 +176,88 @@ def quemar_subtitulos(ruta_video_entrada, ruta_srt, ruta_video_salida):
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-def subir_a_cloudinary(archivo_path, public_id):
+def recortar_a_medida(imagen, ancho, alto):
+    """Escala y recorta la imagen para llenar exactamente ancho x alto
+    (equivalente a PIL.ImageOps.fit, escrito a mano para no sumar otra
+    dependencia)."""
+    ratio_destino = ancho / alto
+    ratio_origen = imagen.width / imagen.height
+    if ratio_origen > ratio_destino:
+        nuevo_alto = alto
+        nuevo_ancho = int(alto * ratio_origen)
+    else:
+        nuevo_ancho = ancho
+        nuevo_alto = int(ancho / ratio_origen)
+    imagen = imagen.resize((nuevo_ancho, nuevo_alto))
+    izquierda = (nuevo_ancho - ancho) // 2
+    arriba = (nuevo_alto - alto) // 2
+    return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
+
+
+def generar_miniatura(ruta_imagen_personaje, texto_miniatura, ruta_salida):
     """
-    Sube el video final a Cloudinary usando el API de upload firmado
-    (requests directo, sin SDK, para mantener el servicio liviano).
+    Arma la miniatura (1280x720) a partir de la imagen del personaje que
+    abre el video, con una franja superior y el texto gancho en mayúsculas.
+    """
+    imagen = Image.open(ruta_imagen_personaje).convert("RGB")
+    imagen = recortar_a_medida(imagen, ANCHO_MINIATURA, ALTO_MINIATURA)
+
+    franja_rect = (0, 0, ANCHO_MINIATURA, int(ALTO_MINIATURA * 0.32))
+    overlay = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
+    dibujo_overlay = ImageDraw.Draw(overlay)
+    dibujo_overlay.rectangle(franja_rect, fill=COLOR_FRANJA_MINIATURA + (235,))
+    imagen = Image.alpha_composite(imagen.convert("RGBA"), overlay).convert("RGB")
+    dibujo = ImageDraw.Draw(imagen)
+
+    titulo = texto_miniatura.upper()
+    tamano_fuente = int(ANCHO_MINIATURA * 0.09)
+    fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, tamano_fuente)
+    ancho_franja = franja_rect[2] - franja_rect[0]
+    lineas = textwrap.wrap(titulo, width=14)
+
+    while True:
+        anchos = [dibujo.textbbox((0, 0), linea, font=fuente)[2] for linea in lineas]
+        if max(anchos, default=0) <= ancho_franja - 80 or tamano_fuente <= 40:
+            break
+        tamano_fuente -= 5
+        fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, tamano_fuente)
+
+    alto_linea = tamano_fuente * 1.15
+    alto_total_texto = alto_linea * len(lineas)
+    centro_y = (franja_rect[1] + franja_rect[3]) / 2 - alto_total_texto / 2
+    centro_x = (franja_rect[0] + franja_rect[2]) / 2
+
+    for i, linea in enumerate(lineas):
+        ancho_linea = dibujo.textbbox((0, 0), linea, font=fuente)[2]
+        pos_x = centro_x - ancho_linea / 2
+        pos_y = centro_y + (i * alto_linea)
+        dibujo.text((pos_x, pos_y), linea, font=fuente, fill=COLOR_TEXTO_MINIATURA)
+
+    imagen.save(ruta_salida, quality=95)
+
+
+def recortar_a_medida(imagen, ancho, alto):
+    """Escala y recorta la imagen para llenar exactamente ancho x alto
+    (equivalente a PIL.ImageOps.fit, escrito a mano para no sumar otra
+    dependencia)."""
+    ratio_destino = ancho / alto
+    ratio_origen = imagen.width / imagen.height
+    if ratio_origen > ratio_destino:
+        nuevo_alto = alto
+        nuevo_ancho = int(alto * ratio_origen)
+    else:
+        nuevo_ancho = ancho
+        nuevo_alto = int(ancho / ratio_origen)
+    imagen = imagen.resize((nuevo_ancho, nuevo_alto))
+    izquierda = (nuevo_ancho - ancho) // 2
+    arriba = (nuevo_alto - alto) // 2
+    return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
+
+
+def subir_a_cloudinary(archivo_path, public_id, tipo_recurso="video"):
+    """
+    Sube un archivo (video o imagen) a Cloudinary usando el API de upload
+    firmado (requests directo, sin SDK, para mantener el servicio liviano).
     """
     import time
     import hashlib
@@ -185,7 +273,7 @@ def subir_a_cloudinary(archivo_path, public_id):
     cadena_firma += CLOUDINARY_API_SECRET
     firma = hashlib.sha1(cadena_firma.encode("utf-8")).hexdigest()
 
-    url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/video/upload"
+    url = f"https://api.cloudinary.com/v1_1/{CLOUDINARY_CLOUD_NAME}/{tipo_recurso}/upload"
     with open(archivo_path, "rb") as f:
         files = {"file": f}
         data = {
@@ -211,6 +299,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         # Ordenar líneas por su posición (Bundle order position)
         lineas_ordenadas = sorted(lineas, key=lambda x: int(x.get("orden", 0)))
+        hablante_apertura = lineas_ordenadas[0].get("hablante", "").strip().upper()
 
         # Descargar las 3 imágenes de personajes una sola vez
         rutas_imagenes = {}
@@ -258,6 +347,16 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         else:
             video_final_path = video_sin_subs_path
 
+        actualizar_estado(job_id, estado="generando_miniatura")
+
+        texto_miniatura = (metadata.get("texto_miniatura") or "").strip()
+        imagen_miniatura_url = None
+        if texto_miniatura:
+            ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
+            generar_miniatura(rutas_imagenes[hablante_apertura], texto_miniatura, ruta_miniatura)
+            public_id_miniatura = f"caricaturas/miniaturas/short_{fila}_{job_id[:8]}"
+            imagen_miniatura_url = subir_a_cloudinary(ruta_miniatura, public_id_miniatura, tipo_recurso="image")
+
         actualizar_estado(job_id, estado="subiendo")
 
         public_id = f"caricaturas/videos/short_{fila}_{job_id[:8]}"
@@ -267,6 +366,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             "job_id": job_id,
             "estado": "completado",
             "url_video": url_video,
+            "imagen_miniatura_url": imagen_miniatura_url,
             "fila": fila,
             **metadata,
         }
@@ -306,6 +406,7 @@ def fabricar_caricatura():
       "descripcion_seo": "...",
       "hashtags": "...",
       "etiquetas_ocultas": "...",
+      "texto_miniatura": "NADIE TE MIRA",
       "webhook_url": "https://hook.make.com/..."
     }
     """
@@ -325,6 +426,7 @@ def fabricar_caricatura():
         "descripcion_seo": data.get("descripcion_seo"),
         "hashtags": data.get("hashtags"),
         "etiquetas_ocultas": data.get("etiquetas_ocultas"),
+        "texto_miniatura": data.get("texto_miniatura"),
     }
 
     job_id = str(uuid.uuid4())
