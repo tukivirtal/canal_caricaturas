@@ -66,6 +66,18 @@ def descargar_archivo(url, destino):
             f.write(chunk)
 
 
+def obtener_duracion(ruta_audio):
+    """Duración en segundos de un archivo de audio, vía ffprobe."""
+    cmd = [
+        "ffprobe", "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        ruta_audio,
+    ]
+    resultado = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    return float(resultado.stdout.strip())
+
+
 def crear_segmento(imagen_path, audio_path, salida_path):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
@@ -107,6 +119,49 @@ def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
         "-i", lista_txt,
         "-c", "copy",
         salida_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def _formato_srt(segundos):
+    """Convierte segundos (float) al formato de timestamp que usa .srt:
+    HH:MM:SS,mmm"""
+    horas = int(segundos // 3600)
+    minutos = int((segundos % 3600) // 60)
+    segs = int(segundos % 60)
+    milisegundos = int(round((segundos - int(segundos)) * 1000))
+    return f"{horas:02d}:{minutos:02d}:{segs:02d},{milisegundos:03d}"
+
+
+def escribir_srt(bloques, ruta_srt):
+    with open(ruta_srt, "w", encoding="utf-8") as f:
+        for idx, (inicio, fin, texto) in enumerate(bloques, start=1):
+            f.write(f"{idx}\n")
+            f.write(f"{_formato_srt(inicio)} --> {_formato_srt(fin)}\n")
+            f.write(f"{texto}\n\n")
+
+
+# Blanco con borde negro, centrado abajo — pensado para el ancho angosto
+# del Short vertical (1080x1920).
+ESTILO_SUBTITULOS = (
+    "FontName=Arial,FontSize=26,PrimaryColour=&H00FFFFFF,"
+    "OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=80"
+)
+
+
+def quemar_subtitulos(ruta_video_entrada, ruta_srt, ruta_video_salida):
+    """Quema los subtítulos sobre el video ya renderizado (filtro subtitles,
+    vía libass)."""
+    filtro = f"subtitles={ruta_srt}:force_style='{ESTILO_SUBTITULOS}'"
+    cmd = [
+        "ffmpeg", "-y",
+        "-i", ruta_video_entrada,
+        "-vf", filtro,
+        "-c:v", "libx264",
+        "-preset", "veryfast",
+        "-crf", "20",
+        "-c:a", "copy",
+        ruta_video_salida,
     ]
     subprocess.run(cmd, check=True, capture_output=True)
 
@@ -167,15 +222,23 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="generando_segmentos")
 
         segmentos = []
+        bloques_subtitulos = []
+        tiempo_acumulado = 0.0
         for idx, linea in enumerate(lineas_ordenadas):
             hablante = linea.get("hablante", "").strip().upper()
             audio_url = linea.get("audio_url")
+            texto = linea.get("texto", "").strip()
 
             if hablante not in rutas_imagenes:
                 raise ValueError(f"Hablante desconocido en línea {idx}: '{hablante}'")
 
             audio_path = os.path.join(work_dir, f"audio_{idx}.mp3")
             descargar_archivo(audio_url, audio_path)
+            duracion = obtener_duracion(audio_path)
+
+            if texto:
+                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + duracion, texto))
+            tiempo_acumulado += duracion
 
             segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
             crear_segmento(rutas_imagenes[hablante], audio_path, segmento_path)
@@ -183,8 +246,17 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="concatenando")
 
-        video_final_path = os.path.join(work_dir, "final.mp4")
-        concatenar_segmentos(segmentos, video_final_path, work_dir)
+        video_sin_subs_path = os.path.join(work_dir, "sin_subtitulos.mp4")
+        concatenar_segmentos(segmentos, video_sin_subs_path, work_dir)
+
+        if bloques_subtitulos:
+            actualizar_estado(job_id, estado="quemando_subtitulos")
+            ruta_srt = os.path.join(work_dir, "subtitulos.srt")
+            escribir_srt(bloques_subtitulos, ruta_srt)
+            video_final_path = os.path.join(work_dir, "final.mp4")
+            quemar_subtitulos(video_sin_subs_path, ruta_srt, video_final_path)
+        else:
+            video_final_path = video_sin_subs_path
 
         actualizar_estado(job_id, estado="subiendo")
 
