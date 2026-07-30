@@ -31,9 +31,9 @@ app = Flask(__name__)
 
 # URLs fijas de las 3 imágenes de personajes (Cloudinary)
 IMAGENES_PERSONAJES = {
-    "DOCTOR": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785196004/terapeuta_acpznm.png",
-    "JUAN": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785196004/Juan_agdpup.png",
-    "MARIA": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785196004/Maria_iqaal5.png",
+    "DOCTOR": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369741/Doctor_elj6ei.png",
+    "JUAN": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369743/Juan_c0fmwo.png",
+    "MARIA": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369738/Maria_xbz18p.png",
 }
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
