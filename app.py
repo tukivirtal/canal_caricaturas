@@ -64,6 +64,19 @@ def actualizar_estado(job_id, **kwargs):
             jobs[job_id].update(kwargs)
 
 
+def _campo(linea, *claves):
+    """Busca el valor de un campo de una línea probando varios nombres
+    posibles, en orden. Tolera que Make mande los nombres nativos que arma
+    el Array aggregator (ej. '$1', '$2', 'Secure URL', 'Bundle order
+    position') en vez de los nombres esperados ('hablante', 'texto',
+    'audio_url', 'orden'), sin tener que renombrar campos en Make."""
+    for clave in claves:
+        valor = linea.get(clave)
+        if valor not in (None, ""):
+            return valor
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Helpers de descarga / ffmpeg
 # ---------------------------------------------------------------------------
@@ -297,9 +310,11 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
     try:
         actualizar_estado(job_id, estado="descargando_audios")
 
-        # Ordenar líneas por su posición (Bundle order position)
-        lineas_ordenadas = sorted(lineas, key=lambda x: int(x.get("orden", 0)))
-        hablante_apertura = lineas_ordenadas[0].get("hablante", "").strip().upper()
+        # Ordenar líneas por su posición (orden / Bundle order position)
+        lineas_ordenadas = sorted(
+            lineas, key=lambda x: int(_campo(x, "orden", "Bundle order position") or 0)
+        )
+        hablante_apertura = str(_campo(lineas_ordenadas[0], "hablante", "$1")).strip().upper()
 
         # Descargar las 3 imágenes de personajes una sola vez
         rutas_imagenes = {}
@@ -314,9 +329,9 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         bloques_subtitulos = []
         tiempo_acumulado = 0.0
         for idx, linea in enumerate(lineas_ordenadas):
-            hablante = linea.get("hablante", "").strip().upper()
-            audio_url = linea.get("audio_url")
-            texto = linea.get("texto", "").strip()
+            hablante = str(_campo(linea, "hablante", "$1")).strip().upper()
+            audio_url = _campo(linea, "audio_url", "Secure URL")
+            texto = str(_campo(linea, "texto", "$2")).strip()
 
             if hablante not in rutas_imagenes:
                 raise ValueError(f"Hablante desconocido en línea {idx}: '{hablante}'")
