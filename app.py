@@ -314,7 +314,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         lineas_ordenadas = sorted(
             lineas, key=lambda x: int(_campo(x, "orden", "Bundle order position") or 0)
         )
-        hablante_apertura = str(_campo(lineas_ordenadas[0], "hablante", "$1")).strip().upper()
+        hablante_apertura = None
 
         # Descargar las 3 imágenes de personajes una sola vez
         rutas_imagenes = {}
@@ -328,13 +328,20 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         segmentos = []
         bloques_subtitulos = []
         tiempo_acumulado = 0.0
+        lineas_saltadas = []
         for idx, linea in enumerate(lineas_ordenadas):
             hablante = str(_campo(linea, "hablante", "$1")).strip().upper()
             audio_url = _campo(linea, "audio_url", "Secure URL")
             texto = str(_campo(linea, "texto", "$2")).strip()
 
-            if hablante not in rutas_imagenes:
-                raise ValueError(f"Hablante desconocido en línea {idx}: '{hablante}'")
+            # Una línea puntual mal formada (hablante desconocido o sin
+            # audio_url) no debe tirar abajo el render entero — se salta
+            # esa línea y se sigue con el resto.
+            if hablante not in rutas_imagenes or not audio_url:
+                lineas_saltadas.append(
+                    f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}')"
+                )
+                continue
 
             audio_path = os.path.join(work_dir, f"audio_{idx}.mp3")
             descargar_archivo(audio_url, audio_path)
@@ -347,6 +354,14 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
             crear_segmento(rutas_imagenes[hablante], audio_path, segmento_path)
             segmentos.append(segmento_path)
+            if hablante_apertura is None:
+                hablante_apertura = hablante
+
+        if not segmentos:
+            raise ValueError(
+                "Ninguna línea del guion se pudo procesar. Líneas descartadas: "
+                + "; ".join(lineas_saltadas)
+            )
 
         actualizar_estado(job_id, estado="concatenando")
 
@@ -383,6 +398,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             "url_video": url_video,
             "imagen_miniatura_url": imagen_miniatura_url,
             "fila": fila,
+            "lineas_saltadas": lineas_saltadas,
             **metadata,
         }
         actualizar_estado(**resultado)
