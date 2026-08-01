@@ -359,7 +359,8 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         if not segmentos:
             raise ValueError(
-                "Ninguna línea del guion se pudo procesar. Líneas descartadas: "
+                f"Ninguna línea del guion se pudo procesar (se recibieron "
+                f"{len(lineas_ordenadas)} líneas en total). Líneas descartadas: "
                 + "; ".join(lineas_saltadas)
             )
 
@@ -462,7 +463,12 @@ def fabricar_caricatura():
 
     job_id = str(uuid.uuid4())
     with jobs_lock:
-        jobs[job_id] = {"job_id": job_id, "estado": "en_cola", "fila": fila}
+        jobs[job_id] = {
+            "job_id": job_id,
+            "estado": "en_cola",
+            "fila": fila,
+            "lineas_recibidas": len(lineas),
+        }
 
     hilo = threading.Thread(
         target=procesar_caricatura,
