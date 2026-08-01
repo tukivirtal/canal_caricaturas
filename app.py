@@ -77,6 +77,20 @@ def _campo(linea, *claves):
     return ""
 
 
+def _url_audio(linea):
+    """Encuentra la URL del audio de una línea sin depender de cómo Make
+    haya nombrado el campo esta vez: primero prueba los nombres conocidos,
+    y si no aparece nada, revisa TODOS los valores de la línea y devuelve
+    el primero que tenga forma de URL (empieza con http)."""
+    conocido = _campo(linea, "audio_url", "Secure URL", "secure_url")
+    if conocido:
+        return conocido
+    for valor in linea.values():
+        if isinstance(valor, str) and valor.startswith("http"):
+            return valor
+    return ""
+
+
 # ---------------------------------------------------------------------------
 # Helpers de descarga / ffmpeg
 # ---------------------------------------------------------------------------
@@ -331,7 +345,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         lineas_saltadas = []
         for idx, linea in enumerate(lineas_ordenadas):
             hablante = str(_campo(linea, "hablante", "$1")).strip().upper()
-            audio_url = _campo(linea, "audio_url", "Secure URL")
+            audio_url = _url_audio(linea)
             texto = str(_campo(linea, "texto", "$2")).strip()
 
             # Una línea puntual mal formada (hablante desconocido o sin
@@ -339,7 +353,8 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             # esa línea y se sigue con el resto.
             if hablante not in rutas_imagenes or not audio_url:
                 lineas_saltadas.append(
-                    f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}')"
+                    f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}', "
+                    f"claves_recibidas={list(linea.keys())})"
                 )
                 continue
 
