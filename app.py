@@ -160,44 +160,60 @@ def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-def _formato_srt(segundos):
-    """Convierte segundos (float) al formato de timestamp que usa .srt:
-    HH:MM:SS,mmm"""
+def _formato_ass(segundos):
+    """Convierte segundos (float) al formato de timestamp que usa .ass:
+    H:MM:SS.cc (centésimas, no milisegundos)."""
     horas = int(segundos // 3600)
     minutos = int((segundos % 3600) // 60)
     segs = int(segundos % 60)
-    milisegundos = int(round((segundos - int(segundos)) * 1000))
-    return f"{horas:02d}:{minutos:02d}:{segs:02d},{milisegundos:03d}"
+    centesimas = int(round((segundos - int(segundos)) * 100))
+    return f"{horas}:{minutos:02d}:{segs:02d}.{centesimas:02d}"
 
 
-def escribir_srt(bloques, ruta_srt):
-    with open(ruta_srt, "w", encoding="utf-8") as f:
-        for idx, (inicio, fin, texto) in enumerate(bloques, start=1):
-            f.write(f"{idx}\n")
-            f.write(f"{_formato_srt(inicio)} --> {_formato_srt(fin)}\n")
-            f.write(f"{texto}\n\n")
+# Tamaño de fuente pensado como pie de página: relativamente chico (2.5%
+# de la altura del video) para que una línea de diálogo completa entre
+# cómoda en 1-2 renglones, sin tapar la escena. Al declarar PlayResX/
+# PlayResY explícitamente iguales al video real, el tamaño sale exacto
+# — a diferencia de un .srt simple, donde ffmpeg asume una resolución
+# genérica y termina escalando la fuente de forma impredecible.
+TAMANO_FUENTE_SUBTITULOS = int(ALTO * 0.025)
+MARGEN_INFERIOR_SUBTITULOS = int(ALTO * 0.10)
+MARGEN_LATERAL_SUBTITULOS = int(ANCHO * 0.08)
+
+ENCABEZADO_ASS = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {ANCHO}
+PlayResY: {ALTO}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,{TAMANO_FUENTE_SUBTITULOS},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,2,{MARGEN_LATERAL_SUBTITULOS},{MARGEN_LATERAL_SUBTITULOS},{MARGEN_INFERIOR_SUBTITULOS},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
 
 
-# Blanco con contorno negro (sin caja de fondo), centrado abajo — pensado
-# para el ancho angosto del Short vertical (1080x1920). BorderStyle=1 es
-# "solo contorno" en vez de la caja opaca de BorderStyle=3, que tapaba
-# demasiado la escena.
-ESTILO_SUBTITULOS = (
-    "FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,"
-    "OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,"
-    "Alignment=2,MarginV=80"
-)
+def escribir_ass(bloques, ruta_ass):
+    """Escribe un archivo .ass (subtítulos con estilo propio) con la
+    resolución y el tamaño de fuente declarados explícitamente, para que
+    ffmpeg no tenga que adivinar cómo escalarlo."""
+    with open(ruta_ass, "w", encoding="utf-8") as f:
+        f.write(ENCABEZADO_ASS)
+        for inicio, fin, texto in bloques:
+            texto_ass = texto.replace("\n", "\\N")
+            f.write(
+                f"Dialogue: 0,{_formato_ass(inicio)},{_formato_ass(fin)},"
+                f"Default,,0,0,0,,{texto_ass}\n"
+            )
 
 
-def quemar_subtitulos(ruta_video_entrada, ruta_srt, ruta_video_salida):
-    """Quema los subtítulos sobre el video ya renderizado (filtro subtitles,
-    vía libass). 'original_size' le indica a ffmpeg la resolución real del
-    video para que escale la fuente correctamente — sin esto, libass asume
-    una resolución genérica y el texto sale desproporcionadamente grande."""
-    filtro = (
-        f"subtitles={ruta_srt}:original_size={ANCHO}x{ALTO}:"
-        f"force_style='{ESTILO_SUBTITULOS}'"
-    )
+def quemar_subtitulos(ruta_video_entrada, ruta_ass, ruta_video_salida):
+    """Quema los subtítulos sobre el video ya renderizado (filtro
+    subtitles, vía libass), usando el .ass con estilo y resolución ya
+    definidos en el propio archivo."""
+    filtro = f"subtitles={ruta_ass}"
     cmd = [
         "ffmpeg", "-y",
         "-i", ruta_video_entrada,
@@ -394,10 +410,10 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         if bloques_subtitulos:
             actualizar_estado(job_id, estado="quemando_subtitulos")
-            ruta_srt = os.path.join(work_dir, "subtitulos.srt")
-            escribir_srt(bloques_subtitulos, ruta_srt)
+            ruta_ass = os.path.join(work_dir, "subtitulos.ass")
+            escribir_ass(bloques_subtitulos, ruta_ass)
             video_final_path = os.path.join(work_dir, "final.mp4")
-            quemar_subtitulos(video_sin_subs_path, ruta_srt, video_final_path)
+            quemar_subtitulos(video_sin_subs_path, ruta_ass, video_final_path)
         else:
             video_final_path = video_sin_subs_path
 
