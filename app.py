@@ -178,18 +178,26 @@ def escribir_srt(bloques, ruta_srt):
             f.write(f"{texto}\n\n")
 
 
-# Blanco con borde negro, centrado abajo — pensado para el ancho angosto
-# del Short vertical (1080x1920).
+# Blanco con contorno negro (sin caja de fondo), centrado abajo — pensado
+# para el ancho angosto del Short vertical (1080x1920). BorderStyle=1 es
+# "solo contorno" en vez de la caja opaca de BorderStyle=3, que tapaba
+# demasiado la escena.
 ESTILO_SUBTITULOS = (
-    "FontName=Arial,FontSize=26,PrimaryColour=&H00FFFFFF,"
-    "OutlineColour=&H00000000,BorderStyle=3,Outline=2,Alignment=2,MarginV=80"
+    "FontName=Arial,FontSize=20,PrimaryColour=&H00FFFFFF,"
+    "OutlineColour=&H00000000,BorderStyle=1,Outline=3,Shadow=0,"
+    "Alignment=2,MarginV=80"
 )
 
 
 def quemar_subtitulos(ruta_video_entrada, ruta_srt, ruta_video_salida):
     """Quema los subtítulos sobre el video ya renderizado (filtro subtitles,
-    vía libass)."""
-    filtro = f"subtitles={ruta_srt}:force_style='{ESTILO_SUBTITULOS}'"
+    vía libass). 'original_size' le indica a ffmpeg la resolución real del
+    video para que escale la fuente correctamente — sin esto, libass asume
+    una resolución genérica y el texto sale desproporcionadamente grande."""
+    filtro = (
+        f"subtitles={ruta_srt}:original_size={ANCHO}x{ALTO}:"
+        f"force_style='{ESTILO_SUBTITULOS}'"
+    )
     cmd = [
         "ffmpeg", "-y",
         "-i", ruta_video_entrada,
