@@ -438,6 +438,11 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             "url_video": url_video,
             "imagen_miniatura_url": imagen_miniatura_url,
             "fila": fila,
+            # "fila" es el ID lógico (columna "ID (Fila)" del Sheet), pero la
+            # fila 1 real de la hoja son los encabezados — así que la fila
+            # real donde vive ese registro es ID + 1. Se manda aparte para
+            # que el módulo de Google Sheets en Make apunte a este campo.
+            "fila_hoja": int(fila) + 1,
             "lineas_saltadas": lineas_saltadas,
             **metadata,
         }
