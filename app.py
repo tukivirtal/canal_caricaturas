@@ -335,7 +335,10 @@ def subir_a_cloudinary(archivo_path, public_id, tipo_recurso="video"):
             "signature": firma,
         }
         resp = requests.post(url, files=files, data=data, timeout=300)
-    resp.raise_for_status()
+    if not resp.ok:
+        raise RuntimeError(
+            f"Cloudinary rechazo la subida ({resp.status_code}): {resp.text[:500]}"
+        )
     return resp.json()["secure_url"]
 
 
