@@ -37,13 +37,20 @@ IMAGENES_PERSONAJES = {
     "FABRICIO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725170/Gemini_Generated_Image_seg99fseg99fseg9_tcvyqi.png",
     "JULI": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725133/Gemini_Generated_Image_seg99fseg99fseg9_jcdt0h.png",
     "DOCTOR_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725570/Gemini_Generated_Image_5ywmko5ywmko5ywm_acmjne.png",
+    "JUAN_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726093/Gemini_Generated_Image_o8nvdfo8nvdfo8nv_b8cied.png",
+    "MARIA_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726275/Gemini_Generated_Image_rvrvbirvrvbirvrv_jwslcc.png",
 }
 
-# En video largo, el Doctor usa una imagen propia distinta a la de los
-# Shorts (misma identidad, dibujo separado emparejado con la voz
-# "Video Largo Terapeuta"). El resto de los personajes comparten imagen
-# entre ambos formatos.
-PERSONAJE_IMAGEN_VIDEO_LARGO = {"DOCTOR": "DOCTOR_LARGO"}
+# En video largo, Doctor/Juan/Maria usan una imagen propia distinta a
+# la de los Shorts (misma identidad y misma voz, dibujo separado para
+# que los 5 personajes de la sesión grupal se vean con el mismo estilo
+# palito). Fabricio y Juli comparten la misma imagen en ambos formatos,
+# porque se generaron directamente en ese estilo.
+PERSONAJE_IMAGEN_VIDEO_LARGO = {
+    "DOCTOR": "DOCTOR_LARGO",
+    "JUAN": "JUAN_LARGO",
+    "MARIA": "MARIA_LARGO",
+}
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
