@@ -36,7 +36,14 @@ IMAGENES_PERSONAJES = {
     "MARIA": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369738/Maria_xbz18p.png",
     "FABRICIO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725170/Gemini_Generated_Image_seg99fseg99fseg9_tcvyqi.png",
     "JULI": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725133/Gemini_Generated_Image_seg99fseg99fseg9_jcdt0h.png",
+    "DOCTOR_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725570/Gemini_Generated_Image_5ywmko5ywmko5ywm_acmjne.png",
 }
+
+# En video largo, el Doctor usa una imagen propia distinta a la de los
+# Shorts (misma identidad, dibujo separado emparejado con la voz
+# "Video Largo Terapeuta"). El resto de los personajes comparten imagen
+# entre ambos formatos.
+PERSONAJE_IMAGEN_VIDEO_LARGO = {"DOCTOR": "DOCTOR_LARGO"}
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
@@ -518,12 +525,13 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         hablante_apertura = None
         for idx, linea in enumerate(lineas):
             hablante = str(_campo(linea, "hablante")).strip().upper()
+            imagen_clave = PERSONAJE_IMAGEN_VIDEO_LARGO.get(hablante, hablante)
             audio_url = _url_audio(linea)
             texto = str(_campo(linea, "texto")).strip()
             color_nombre = str(_campo(linea, "color_fondo")).strip().lower()
             color_fondo = COLORES_FONDO.get(color_nombre, COLOR_FONDO_DEFAULT)
 
-            if hablante not in rutas_imagenes or not audio_url:
+            if imagen_clave not in rutas_imagenes or not audio_url:
                 lineas_saltadas.append(
                     f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}', "
                     f"claves_recibidas={list(linea.keys())})"
@@ -539,10 +547,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             tiempo_acumulado += duracion
 
             segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
-            crear_segmento(rutas_imagenes[hablante], audio_path, segmento_path, color_fondo=color_fondo)
+            crear_segmento(rutas_imagenes[imagen_clave], audio_path, segmento_path, color_fondo=color_fondo)
             segmentos.append(segmento_path)
             if hablante_apertura is None:
-                hablante_apertura = hablante
+                hablante_apertura = imagen_clave
 
         if not segmentos:
             raise ValueError(
