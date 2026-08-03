@@ -41,10 +41,16 @@ IMAGENES_PERSONAJES = {
     "MARIA_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726275/Gemini_Generated_Image_rvrvbirvrvbirvrv_jwslcc.png",
 }
 
-# Prop fijo del parque (banco + árbol), usado como fondo de todas las
-# escenas de video largo, superpuesto sobre el color sólido que rota
-# por escena.
-IMAGEN_PROP_PARQUE = "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728004/Gemini_Generated_Image_4fed7s4fed7s4fed_livzxn.png"
+# Props del parque, uno por cada una de las 4 escenas de video largo
+# (banco/árbol, plaza con juegos, laguna, mesa de picnic), superpuestos
+# sobre el color sólido que rota por escena. El índice de la lista
+# (0-3) corresponde a "numero" de escena (1-4) menos uno.
+IMAGENES_PROP_PARQUE = [
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728004/Gemini_Generated_Image_4fed7s4fed7s4fed_livzxn.png",
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728619/Gemini_Generated_Image_db6vpodb6vpodb6v_eplvoh.png",
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728750/Gemini_Generated_Image_8iwnq78iwnq78iwn_bzvr5c.png",
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728859/Gemini_Generated_Image_y31bwmy31bwmy31b_ewjnl0.png",
+]
 
 # En video largo, Doctor/Juan/Maria usan una imagen propia distinta a
 # la de los Shorts (misma identidad y misma voz, dibujo separado para
@@ -283,7 +289,7 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
 # Mismo criterio para el video largo (horizontal), con su propia
 # resolución declarada explícitamente.
-TAMANO_FUENTE_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.045)
+TAMANO_FUENTE_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.028)
 MARGEN_INFERIOR_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.08)
 MARGEN_LATERAL_SUBTITULOS_LARGO = int(ANCHO_LARGO * 0.08)
 
@@ -591,8 +597,11 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             descargar_archivo(url, ruta)
             rutas_imagenes[personaje] = ruta
 
-        ruta_prop_parque = os.path.join(work_dir, "prop_parque.png")
-        descargar_archivo(IMAGEN_PROP_PARQUE, ruta_prop_parque)
+        rutas_props_parque = []
+        for i, url in enumerate(IMAGENES_PROP_PARQUE):
+            ruta = os.path.join(work_dir, f"prop_parque_{i}.png")
+            descargar_archivo(url, ruta)
+            rutas_props_parque.append(ruta)
 
         actualizar_estado(job_id, estado="generando_segmentos")
 
@@ -608,6 +617,11 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             texto = str(_campo(linea, "texto")).strip()
             color_nombre = str(_campo(linea, "color_fondo")).strip().lower()
             color_fondo = COLORES_FONDO.get(color_nombre, COLOR_FONDO_DEFAULT)
+            try:
+                numero_escena = int(_campo(linea, "numero") or 1)
+            except ValueError:
+                numero_escena = 1
+            ruta_prop_parque = rutas_props_parque[(numero_escena - 1) % len(rutas_props_parque)]
 
             if imagen_clave not in rutas_imagenes or not audio_url:
                 lineas_saltadas.append(
