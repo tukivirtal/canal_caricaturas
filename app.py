@@ -41,6 +41,11 @@ IMAGENES_PERSONAJES = {
     "MARIA_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726275/Gemini_Generated_Image_rvrvbirvrvbirvrv_jwslcc.png",
 }
 
+# Prop fijo del parque (banco + árbol), usado como fondo de todas las
+# escenas de video largo, superpuesto sobre el color sólido que rota
+# por escena.
+IMAGEN_PROP_PARQUE = "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728004/Gemini_Generated_Image_4fed7s4fed7s4fed_livzxn.png"
+
 # En video largo, Doctor/Juan/Maria usan una imagen propia distinta a
 # la de los Shorts (misma identidad y misma voz, dibujo separado para
 # que los 5 personajes de la sesión grupal se vean con el mismo estilo
@@ -177,6 +182,45 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO
         "-vf",
         f"scale={ancho}:{alto}:force_original_aspect_ratio=decrease,"
         f"pad={ancho}:{alto}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
+        "-preset", "veryfast",
+        salida_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def crear_segmento_escena(
+    imagen_personaje_path, imagen_prop_path, audio_path, salida_path,
+    color_fondo=COLOR_FONDO_DEFAULT, ancho=ANCHO_LARGO, alto=ALTO_LARGO,
+):
+    """
+    Igual que crear_segmento, pero para la sesión grupal de video largo:
+    en vez de un solo color de fondo, compone tres capas —
+    color sólido (cielo) + prop fijo del parque (banco/árbol, anclado
+    abajo) + personaje (recortando su fondo blanco vía colorkey, para
+    que se vea el fondo/prop detrás).
+    """
+    altura_personaje = int(alto * 0.85)
+    margen_inferior_personaje = int(alto * 0.05)
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c={color_fondo}:s={ancho}x{alto}",
+        "-loop", "1", "-i", imagen_prop_path,
+        "-loop", "1", "-i", imagen_personaje_path,
+        "-i", audio_path,
+        "-filter_complex",
+        f"[1:v]scale={ancho}:-1[prop];"
+        f"[0:v][prop]overlay=0:H-h[bg1];"
+        f"[2:v]scale=-1:{altura_personaje}[pj];"
+        f"[pj]colorkey=0xFFFFFF:0.15:0.05[pjck];"
+        f"[bg1][pjck]overlay=(W-w)/2:H-h-{margen_inferior_personaje}[final]",
+        "-map", "[final]",
+        "-map", "3:a",
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
         "-preset", "veryfast",
         salida_path,
     ]
@@ -547,6 +591,9 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             descargar_archivo(url, ruta)
             rutas_imagenes[personaje] = ruta
 
+        ruta_prop_parque = os.path.join(work_dir, "prop_parque.png")
+        descargar_archivo(IMAGEN_PROP_PARQUE, ruta_prop_parque)
+
         actualizar_estado(job_id, estado="generando_segmentos")
 
         segmentos = []
@@ -578,8 +625,8 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             tiempo_acumulado += duracion
 
             segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
-            crear_segmento(
-                rutas_imagenes[imagen_clave], audio_path, segmento_path,
+            crear_segmento_escena(
+                rutas_imagenes[imagen_clave], ruta_prop_parque, audio_path, segmento_path,
                 color_fondo=color_fondo, ancho=ANCHO_LARGO, alto=ALTO_LARGO,
             )
             segmentos.append(segmento_path)
