@@ -84,6 +84,10 @@ COLORES_MINIATURA_RGB = {
 ANCHO = 1080
 ALTO = 1920
 
+# Ancho/alto del video largo (horizontal 16:9, formato clásico de YouTube)
+ANCHO_LARGO = 1920
+ALTO_LARGO = 1080
+
 # Tamaño estándar de miniatura de YouTube (horizontal 16:9), independiente
 # de que el video en sí sea vertical.
 ANCHO_MINIATURA = 1280
@@ -154,7 +158,7 @@ def obtener_duracion(ruta_audio):
     return float(resultado.stdout.strip())
 
 
-def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO_DEFAULT):
+def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO_DEFAULT, ancho=ANCHO, alto=ALTO):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
     del audio (usando -shortest, que corta cuando termina el audio).
@@ -171,8 +175,8 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO
         "-pix_fmt", "yuv420p",
         "-shortest",
         "-vf",
-        f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=decrease,"
-        f"pad={ANCHO}:{ALTO}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
+        f"scale={ancho}:{alto}:force_original_aspect_ratio=decrease,"
+        f"pad={ancho}:{alto}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
         "-preset", "veryfast",
         salida_path,
     ]
@@ -233,13 +237,33 @@ Style: Default,Arial,{TAMANO_FUENTE_SUBTITULOS},&H00FFFFFF,&H000000FF,&H00000000
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
+# Mismo criterio para el video largo (horizontal), con su propia
+# resolución declarada explícitamente.
+TAMANO_FUENTE_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.045)
+MARGEN_INFERIOR_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.08)
+MARGEN_LATERAL_SUBTITULOS_LARGO = int(ANCHO_LARGO * 0.08)
 
-def escribir_ass(bloques, ruta_ass):
+ENCABEZADO_ASS_LARGO = f"""[Script Info]
+ScriptType: v4.00+
+PlayResX: {ANCHO_LARGO}
+PlayResY: {ALTO_LARGO}
+ScaledBorderAndShadow: yes
+
+[V4+ Styles]
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,{TAMANO_FUENTE_SUBTITULOS_LARGO},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,2,{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_INFERIOR_SUBTITULOS_LARGO},1
+
+[Events]
+Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
+"""
+
+
+def escribir_ass(bloques, ruta_ass, encabezado=ENCABEZADO_ASS):
     """Escribe un archivo .ass (subtítulos con estilo propio) con la
     resolución y el tamaño de fuente declarados explícitamente, para que
     ffmpeg no tenga que adivinar cómo escalarlo."""
     with open(ruta_ass, "w", encoding="utf-8") as f:
-        f.write(ENCABEZADO_ASS)
+        f.write(encabezado)
         for inicio, fin, texto in bloques:
             texto_ass = texto.replace("\n", "\\N")
             f.write(
@@ -554,7 +578,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             tiempo_acumulado += duracion
 
             segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
-            crear_segmento(rutas_imagenes[imagen_clave], audio_path, segmento_path, color_fondo=color_fondo)
+            crear_segmento(
+                rutas_imagenes[imagen_clave], audio_path, segmento_path,
+                color_fondo=color_fondo, ancho=ANCHO_LARGO, alto=ALTO_LARGO,
+            )
             segmentos.append(segmento_path)
             if hablante_apertura is None:
                 hablante_apertura = imagen_clave
@@ -574,7 +601,7 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         if bloques_subtitulos:
             actualizar_estado(job_id, estado="quemando_subtitulos")
             ruta_ass = os.path.join(work_dir, "subtitulos.ass")
-            escribir_ass(bloques_subtitulos, ruta_ass)
+            escribir_ass(bloques_subtitulos, ruta_ass, encabezado=ENCABEZADO_ASS_LARGO)
             video_final_path = os.path.join(work_dir, "final.mp4")
             quemar_subtitulos(video_sin_subs_path, ruta_ass, video_final_path)
         else:
