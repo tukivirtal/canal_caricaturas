@@ -34,6 +34,8 @@ IMAGENES_PERSONAJES = {
     "DOCTOR": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369741/Doctor_elj6ei.png",
     "JUAN": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369743/Juan_c0fmwo.png",
     "MARIA": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369738/Maria_xbz18p.png",
+    "FABRICIO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725170/Gemini_Generated_Image_seg99fseg99fseg9_tcvyqi.png",
+    "JULI": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725133/Gemini_Generated_Image_seg99fseg99fseg9_jcdt0h.png",
 }
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
