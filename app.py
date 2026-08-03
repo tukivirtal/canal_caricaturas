@@ -41,6 +41,29 @@ CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
 CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "caricaturas")
 
+# Color de fondo pastel que ya usa el Short (imagen del personaje + fondo fijo)
+COLOR_FONDO_DEFAULT = "0xF5E6D3"
+
+# Para los videos largos (sesión grupal), el fondo cambia por escena en vez
+# de ser siempre el mismo pastel. Colores para ffmpeg (formato 0xRRGGBB) y
+# su equivalente en RGB para las miniaturas (PIL).
+COLORES_FONDO = {
+    "rojo": "0xE74C3C",
+    "azul": "0x3498DB",
+    "verde": "0x2ECC71",
+    "violeta": "0x9B59B6",
+    "naranja": "0xE67E22",
+    "amarillo": "0xF1C40F",
+}
+COLORES_MINIATURA_RGB = {
+    "rojo": (192, 57, 43),
+    "azul": (41, 128, 185),
+    "verde": (39, 174, 96),
+    "violeta": (142, 68, 173),
+    "naranja": (211, 84, 0),
+    "amarillo": (241, 196, 15),
+}
+
 # Ancho/alto del Short (vertical 9:16)
 ANCHO = 1080
 ALTO = 1920
@@ -115,7 +138,7 @@ def obtener_duracion(ruta_audio):
     return float(resultado.stdout.strip())
 
 
-def crear_segmento(imagen_path, audio_path, salida_path):
+def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO_DEFAULT):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
     del audio (usando -shortest, que corta cuando termina el audio).
@@ -133,7 +156,7 @@ def crear_segmento(imagen_path, audio_path, salida_path):
         "-shortest",
         "-vf",
         f"scale={ANCHO}:{ALTO}:force_original_aspect_ratio=decrease,"
-        f"pad={ANCHO}:{ALTO}:(ow-iw)/2:(oh-ih)/2:color=0xF5E6D3",
+        f"pad={ANCHO}:{ALTO}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
         "-preset", "veryfast",
         salida_path,
     ]
@@ -245,7 +268,7 @@ def recortar_a_medida(imagen, ancho, alto):
     return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
 
 
-def generar_miniatura(ruta_imagen_personaje, texto_miniatura, ruta_salida):
+def generar_miniatura(ruta_imagen_personaje, texto_miniatura, ruta_salida, color_franja=COLOR_FRANJA_MINIATURA):
     """
     Arma la miniatura (1280x720) a partir de la imagen del personaje que
     abre el video, con una franja superior y el texto gancho en mayúsculas.
@@ -256,7 +279,7 @@ def generar_miniatura(ruta_imagen_personaje, texto_miniatura, ruta_salida):
     franja_rect = (0, 0, ANCHO_MINIATURA, int(ALTO_MINIATURA * 0.32))
     overlay = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
     dibujo_overlay = ImageDraw.Draw(overlay)
-    dibujo_overlay.rectangle(franja_rect, fill=COLOR_FRANJA_MINIATURA + (235,))
+    dibujo_overlay.rectangle(franja_rect, fill=color_franja + (235,))
     imagen = Image.alpha_composite(imagen.convert("RGBA"), overlay).convert("RGB")
     dibujo = ImageDraw.Draw(imagen)
 
@@ -466,6 +489,126 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
+    """
+    Igual que procesar_caricatura, pero para la sesión grupal de video
+    largo: el fondo de cada línea es un color sólido según la escena a la
+    que pertenece (campo 'color_fondo'), en vez de ser siempre el mismo
+    pastel. Las líneas llegan en el orden en que Make las agregó (escena
+    por escena, línea por línea dentro de cada escena) — no se reordenan.
+    """
+    work_dir = tempfile.mkdtemp(prefix=f"video_largo_{job_id}_")
+    try:
+        actualizar_estado(job_id, estado="descargando_audios")
+
+        rutas_imagenes = {}
+        for personaje, url in IMAGENES_PERSONAJES.items():
+            ruta = os.path.join(work_dir, f"img_{personaje}.png")
+            descargar_archivo(url, ruta)
+            rutas_imagenes[personaje] = ruta
+
+        actualizar_estado(job_id, estado="generando_segmentos")
+
+        segmentos = []
+        bloques_subtitulos = []
+        tiempo_acumulado = 0.0
+        lineas_saltadas = []
+        hablante_apertura = None
+        for idx, linea in enumerate(lineas):
+            hablante = str(_campo(linea, "hablante")).strip().upper()
+            audio_url = _url_audio(linea)
+            texto = str(_campo(linea, "texto")).strip()
+            color_nombre = str(_campo(linea, "color_fondo")).strip().lower()
+            color_fondo = COLORES_FONDO.get(color_nombre, COLOR_FONDO_DEFAULT)
+
+            if hablante not in rutas_imagenes or not audio_url:
+                lineas_saltadas.append(
+                    f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}', "
+                    f"claves_recibidas={list(linea.keys())})"
+                )
+                continue
+
+            audio_path = os.path.join(work_dir, f"audio_{idx}.mp3")
+            descargar_archivo(audio_url, audio_path)
+            duracion = obtener_duracion(audio_path)
+
+            if texto:
+                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + duracion, texto))
+            tiempo_acumulado += duracion
+
+            segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
+            crear_segmento(rutas_imagenes[hablante], audio_path, segmento_path, color_fondo=color_fondo)
+            segmentos.append(segmento_path)
+            if hablante_apertura is None:
+                hablante_apertura = hablante
+
+        if not segmentos:
+            raise ValueError(
+                f"Ninguna línea del guion se pudo procesar (se recibieron "
+                f"{len(lineas)} líneas en total). Líneas descartadas: "
+                + "; ".join(lineas_saltadas)
+            )
+
+        actualizar_estado(job_id, estado="concatenando")
+
+        video_sin_subs_path = os.path.join(work_dir, "sin_subtitulos.mp4")
+        concatenar_segmentos(segmentos, video_sin_subs_path, work_dir)
+
+        if bloques_subtitulos:
+            actualizar_estado(job_id, estado="quemando_subtitulos")
+            ruta_ass = os.path.join(work_dir, "subtitulos.ass")
+            escribir_ass(bloques_subtitulos, ruta_ass)
+            video_final_path = os.path.join(work_dir, "final.mp4")
+            quemar_subtitulos(video_sin_subs_path, ruta_ass, video_final_path)
+        else:
+            video_final_path = video_sin_subs_path
+
+        actualizar_estado(job_id, estado="generando_miniatura")
+
+        texto_miniatura = (metadata.get("texto_miniatura") or "").strip()
+        imagen_miniatura_url = None
+        if texto_miniatura:
+            color_miniatura_nombre = str(metadata.get("color_miniatura") or "").strip().lower()
+            color_franja = COLORES_MINIATURA_RGB.get(color_miniatura_nombre, COLOR_FRANJA_MINIATURA)
+            ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
+            generar_miniatura(
+                rutas_imagenes[hablante_apertura], texto_miniatura, ruta_miniatura, color_franja=color_franja
+            )
+            public_id_miniatura = f"caricaturas/miniaturas/largo_{fila}_{job_id[:8]}"
+            imagen_miniatura_url = subir_a_cloudinary(ruta_miniatura, public_id_miniatura, tipo_recurso="image")
+
+        actualizar_estado(job_id, estado="subiendo")
+
+        public_id = f"caricaturas/videos_largos/largo_{fila}_{job_id[:8]}"
+        url_video = subir_a_cloudinary(video_final_path, public_id)
+
+        resultado = {
+            "job_id": job_id,
+            "estado": "completado",
+            "url_video": url_video,
+            "imagen_miniatura_url": imagen_miniatura_url,
+            "fila": fila,
+            "fila_hoja": int(fila) + 1,
+            "lineas_saltadas": lineas_saltadas,
+            **metadata,
+        }
+        actualizar_estado(**resultado)
+
+        if webhook_url:
+            requests.post(webhook_url, json=resultado, timeout=30)
+
+    except Exception as e:
+        error_info = {"job_id": job_id, "estado": "error", "error": str(e), "fila": fila}
+        actualizar_estado(**error_info)
+        if webhook_url:
+            try:
+                requests.post(webhook_url, json=error_info, timeout=30)
+            except Exception:
+                pass
+    finally:
+        shutil.rmtree(work_dir, ignore_errors=True)
+
+
 # ---------------------------------------------------------------------------
 # Endpoints
 # ---------------------------------------------------------------------------
@@ -519,6 +662,73 @@ def fabricar_caricatura():
 
     hilo = threading.Thread(
         target=procesar_caricatura,
+        args=(job_id, lineas, fila, metadata, webhook_url),
+        daemon=True,
+    )
+    hilo.start()
+
+    return jsonify({"job_id": job_id, "estado": "en_cola"}), 202
+
+
+@app.route("/fabricar_video_largo", methods=["POST"])
+def fabricar_video_largo():
+    """
+    Body JSON esperado (desde Make, después del Array Aggregator de la
+    sesión grupal):
+    {
+      "lineas": [
+        {"hablante": "Doctor", "texto": "...", "audio_url": "...", "numero": 1, "color_fondo": "rojo"},
+        {"hablante": "Juan", "texto": "...", "audio_url": "...", "numero": 1, "color_fondo": "rojo"},
+        {"hablante": "Maria", "texto": "...", "audio_url": "...", "numero": 2, "color_fondo": "azul"},
+        ...
+      ],
+      "fila": 3,
+      "tema": "...",
+      "concepto_psicologico": "...",
+      "personajes_participantes": "Doctor, Juan, Maria",
+      "titulo_seo": "...",
+      "descripcion_seo": "...",
+      "hashtags": "...",
+      "etiquetas_ocultas": "...",
+      "texto_miniatura": "NADIE TE MIRA",
+      "color_miniatura": "rojo",
+      "webhook_url": "https://hook.make.com/..."
+    }
+    """
+    data = request.get_json(force=True)
+
+    lineas = data.get("lineas")
+    fila = data.get("fila")
+    webhook_url = data.get("webhook_url")
+
+    if not lineas or not isinstance(lineas, list):
+        return jsonify({"error": "Falta el campo 'lineas' (array)"}), 400
+    if not fila:
+        return jsonify({"error": "Falta el campo 'fila'"}), 400
+
+    metadata = {
+        "tema": data.get("tema"),
+        "concepto_psicologico": data.get("concepto_psicologico"),
+        "personajes_participantes": data.get("personajes_participantes"),
+        "titulo_seo": data.get("titulo_seo"),
+        "descripcion_seo": data.get("descripcion_seo"),
+        "hashtags": data.get("hashtags"),
+        "etiquetas_ocultas": data.get("etiquetas_ocultas"),
+        "texto_miniatura": data.get("texto_miniatura"),
+        "color_miniatura": data.get("color_miniatura"),
+    }
+
+    job_id = str(uuid.uuid4())
+    with jobs_lock:
+        jobs[job_id] = {
+            "job_id": job_id,
+            "estado": "en_cola",
+            "fila": fila,
+            "lineas_recibidas": len(lineas),
+        }
+
+    hilo = threading.Thread(
+        target=procesar_video_largo,
         args=(job_id, lineas, fila, metadata, webhook_url),
         daemon=True,
     )
