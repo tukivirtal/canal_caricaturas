@@ -611,14 +611,14 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         lineas_saltadas = []
         hablante_apertura = None
         for idx, linea in enumerate(lineas):
-            hablante = str(_campo(linea, "hablante")).strip().upper()
+            hablante = str(_campo(linea, "hablante", "$3")).strip().upper()
             imagen_clave = PERSONAJE_IMAGEN_VIDEO_LARGO.get(hablante, hablante)
             audio_url = _url_audio(linea)
-            texto = str(_campo(linea, "texto")).strip()
-            color_nombre = str(_campo(linea, "color_fondo")).strip().lower()
+            texto = str(_campo(linea, "texto", "$4")).strip()
+            color_nombre = str(_campo(linea, "color_fondo", "$2")).strip().lower()
             color_fondo = COLORES_FONDO.get(color_nombre, COLOR_FONDO_DEFAULT)
             try:
-                numero_escena = int(_campo(linea, "numero") or 1)
+                numero_escena = int(_campo(linea, "numero", "$1") or 1)
             except ValueError:
                 numero_escena = 1
             ruta_prop_parque = rutas_props_parque[(numero_escena - 1) % len(rutas_props_parque)]
