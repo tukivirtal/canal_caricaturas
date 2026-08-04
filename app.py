@@ -19,6 +19,7 @@ import subprocess
 import tempfile
 import shutil
 import textwrap
+import concurrent.futures
 import requests
 from flask import Flask, request, jsonify
 from PIL import Image, ImageDraw, ImageFont
@@ -194,33 +195,46 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO
     subprocess.run(cmd, check=True, capture_output=True)
 
 
-def crear_segmento_escena(
-    imagen_personaje_path, imagen_prop_path, audio_path, salida_path,
-    color_fondo=COLOR_FONDO_DEFAULT, ancho=ANCHO_LARGO, alto=ALTO_LARGO,
-):
+def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
+    """
+    Renderiza UNA sola vez la combinación color sólido (cielo) + prop del
+    parque (banco/árbol, anclado abajo) como una imagen estática. Se
+    reutiliza para todas las líneas de una misma escena, en vez de
+    recomponer las mismas dos capas de fondo en cada línea.
+    """
+    cmd = [
+        "ffmpeg", "-y",
+        "-f", "lavfi", "-i", f"color=c={color_fondo}:s={ancho}x{alto}",
+        "-i", imagen_prop_path,
+        "-filter_complex",
+        f"[1:v]scale={ancho}:-1[prop];[0:v][prop]overlay=0:H-h[final]",
+        "-map", "[final]",
+        "-frames:v", "1",
+        salida_path,
+    ]
+    subprocess.run(cmd, check=True, capture_output=True)
+
+
+def crear_segmento_escena(imagen_personaje_path, ruta_fondo, audio_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
     """
     Igual que crear_segmento, pero para la sesión grupal de video largo:
-    en vez de un solo color de fondo, compone tres capas —
-    color sólido (cielo) + prop fijo del parque (banco/árbol, anclado
-    abajo) + personaje (recortando su fondo blanco vía colorkey, para
-    que se vea el fondo/prop detrás).
+    superpone al personaje (recortando su fondo blanco vía colorkey)
+    sobre un fondo de escena ya renderizado (ver generar_fondo_escena),
+    en vez de armar el fondo desde cero en cada línea.
     """
     altura_personaje = int(alto * 0.85)
     margen_inferior_personaje = int(alto * 0.05)
     cmd = [
         "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c={color_fondo}:s={ancho}x{alto}",
-        "-loop", "1", "-i", imagen_prop_path,
+        "-loop", "1", "-i", ruta_fondo,
         "-loop", "1", "-i", imagen_personaje_path,
         "-i", audio_path,
         "-filter_complex",
-        f"[1:v]scale={ancho}:-1[prop];"
-        f"[0:v][prop]overlay=0:H-h[bg1];"
-        f"[2:v]scale=-1:{altura_personaje}[pj];"
+        f"[1:v]scale=-1:{altura_personaje}[pj];"
         f"[pj]colorkey=0xFFFFFF:0.15:0.05[pjck];"
-        f"[bg1][pjck]overlay=(W-w)/2:H-h-{margen_inferior_personaje}[final]",
+        f"[0:v][pjck]overlay=(W-w)/2:H-h-{margen_inferior_personaje}[final]",
         "-map", "[final]",
-        "-map", "3:a",
+        "-map", "2:a",
         "-c:v", "libx264",
         "-tune", "stillimage",
         "-c:a", "aac",
@@ -603,13 +617,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             descargar_archivo(url, ruta)
             rutas_props_parque.append(ruta)
 
-        actualizar_estado(job_id, estado="generando_segmentos")
-
-        segmentos = []
-        bloques_subtitulos = []
-        tiempo_acumulado = 0.0
+        # Fase 1: resolver los campos de cada línea y descartar las que
+        # falten datos, sin tocar ffmpeg todavía.
+        lineas_validas = []
         lineas_saltadas = []
-        hablante_apertura = None
         for idx, linea in enumerate(lineas):
             hablante = str(_campo(linea, "hablante", "$3")).strip().upper()
             imagen_clave = PERSONAJE_IMAGEN_VIDEO_LARGO.get(hablante, hablante)
@@ -621,7 +632,6 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
                 numero_escena = int(_campo(linea, "numero", "$1") or 1)
             except ValueError:
                 numero_escena = 1
-            ruta_prop_parque = rutas_props_parque[(numero_escena - 1) % len(rutas_props_parque)]
 
             if imagen_clave not in rutas_imagenes or not audio_url:
                 lineas_saltadas.append(
@@ -630,29 +640,67 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
                 )
                 continue
 
-            audio_path = os.path.join(work_dir, f"audio_{idx}.mp3")
-            descargar_archivo(audio_url, audio_path)
-            duracion = obtener_duracion(audio_path)
+            lineas_validas.append({
+                "idx": idx, "imagen_clave": imagen_clave, "audio_url": audio_url,
+                "texto": texto, "color_fondo": color_fondo, "numero_escena": numero_escena,
+            })
 
-            if texto:
-                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + duracion, texto))
-            tiempo_acumulado += duracion
-
-            segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
-            crear_segmento_escena(
-                rutas_imagenes[imagen_clave], ruta_prop_parque, audio_path, segmento_path,
-                color_fondo=color_fondo, ancho=ANCHO_LARGO, alto=ALTO_LARGO,
-            )
-            segmentos.append(segmento_path)
-            if hablante_apertura is None:
-                hablante_apertura = imagen_clave
-
-        if not segmentos:
+        if not lineas_validas:
             raise ValueError(
                 f"Ninguna línea del guion se pudo procesar (se recibieron "
                 f"{len(lineas)} líneas en total). Líneas descartadas: "
                 + "; ".join(lineas_saltadas)
             )
+
+        # Fase 2: descargar todos los audios en paralelo (independientes
+        # entre sí) y medir su duración.
+        def _descargar_audio_linea(item):
+            audio_path = os.path.join(work_dir, f"audio_{item['idx']}.mp3")
+            descargar_archivo(item["audio_url"], audio_path)
+            item["audio_path"] = audio_path
+            item["duracion"] = obtener_duracion(audio_path)
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            lineas_validas = list(executor.map(_descargar_audio_linea, lineas_validas))
+
+        # Fase 3: timing acumulado de subtítulos, secuencial y en el orden
+        # original (necesita el orden real para que los tiempos den bien).
+        bloques_subtitulos = []
+        tiempo_acumulado = 0.0
+        for item in lineas_validas:
+            if item["texto"]:
+                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + item["duracion"], item["texto"]))
+            tiempo_acumulado += item["duracion"]
+        hablante_apertura = lineas_validas[0]["imagen_clave"]
+
+        actualizar_estado(job_id, estado="generando_segmentos")
+
+        # Fase 4: precomputar el fondo (color + prop del parque) UNA sola
+        # vez por combinación, en vez de recrearlo en cada línea.
+        fondos_cache = {}
+        for item in lineas_validas:
+            ruta_prop = rutas_props_parque[(item["numero_escena"] - 1) % len(rutas_props_parque)]
+            clave = (item["color_fondo"], ruta_prop)
+            if clave not in fondos_cache:
+                ruta_fondo = os.path.join(work_dir, f"fondo_{len(fondos_cache)}.png")
+                generar_fondo_escena(item["color_fondo"], ruta_prop, ruta_fondo, ANCHO_LARGO, ALTO_LARGO)
+                fondos_cache[clave] = ruta_fondo
+            item["ruta_fondo"] = fondos_cache[clave]
+
+        # Fase 5: generar los segmentos de video en paralelo.
+        def _generar_segmento_linea(item):
+            segmento_path = os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4")
+            crear_segmento_escena(
+                rutas_imagenes[item["imagen_clave"]], item["ruta_fondo"], item["audio_path"], segmento_path,
+                ancho=ANCHO_LARGO, alto=ALTO_LARGO,
+            )
+            return segmento_path
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+            list(executor.map(_generar_segmento_linea, lineas_validas))
+
+        segmentos = [os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4") for item in lineas_validas]
 
         actualizar_estado(job_id, estado="concatenando")
 
