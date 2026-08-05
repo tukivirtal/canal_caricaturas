@@ -150,12 +150,22 @@ def _url_audio(linea):
 # Helpers de descarga / ffmpeg
 # ---------------------------------------------------------------------------
 
-def descargar_archivo(url, destino):
-    r = requests.get(url, stream=True, timeout=60)
-    r.raise_for_status()
-    with open(destino, "wb") as f:
-        for chunk in r.iter_content(chunk_size=8192):
-            f.write(chunk)
+def descargar_archivo(url, destino, intentos=3):
+    """Descarga un archivo, reintentando si la conexión se corta a mitad
+    de camino (más probable ahora que se descargan varios audios en
+    paralelo). Si todos los intentos fallan, deja que la última
+    excepción se propague."""
+    for intento in range(1, intentos + 1):
+        try:
+            r = requests.get(url, stream=True, timeout=60)
+            r.raise_for_status()
+            with open(destino, "wb") as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
+            return
+        except (requests.RequestException, OSError):
+            if intento == intentos:
+                raise
 
 
 def _run_ffmpeg(cmd):
