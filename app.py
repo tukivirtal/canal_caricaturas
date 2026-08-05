@@ -158,6 +158,18 @@ def descargar_archivo(url, destino):
             f.write(chunk)
 
 
+def _run_ffmpeg(cmd):
+    """subprocess.run para comandos de ffmpeg/ffprobe, pero si fallan
+    incluye el stderr real en el error — sin esto, el mensaje solo dice
+    'returned non-zero exit status N' sin ninguna pista de la causa."""
+    resultado = subprocess.run(cmd, capture_output=True, text=True)
+    if resultado.returncode != 0:
+        raise RuntimeError(
+            f"{cmd[0]} falló (código {resultado.returncode}): {resultado.stderr[-800:]}"
+        )
+    return resultado
+
+
 def obtener_duracion(ruta_audio):
     """Duración en segundos de un archivo de audio, vía ffprobe."""
     cmd = [
@@ -166,7 +178,7 @@ def obtener_duracion(ruta_audio):
         "-of", "default=noprint_wrappers=1:nokey=1",
         ruta_audio,
     ]
-    resultado = subprocess.run(cmd, check=True, capture_output=True, text=True)
+    resultado = _run_ffmpeg(cmd)
     return float(resultado.stdout.strip())
 
 
@@ -192,7 +204,7 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO
         "-preset", "veryfast",
         salida_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 
 def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
@@ -212,7 +224,7 @@ def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO
         "-frames:v", "1",
         salida_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 
 def crear_segmento_escena(imagen_personaje_path, ruta_fondo, audio_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
@@ -244,7 +256,7 @@ def crear_segmento_escena(imagen_personaje_path, ruta_fondo, audio_path, salida_
         "-preset", "veryfast",
         salida_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 
 def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
@@ -264,7 +276,7 @@ def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
         "-c", "copy",
         salida_path,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 
 def _formato_ass(segundos):
@@ -351,7 +363,7 @@ def quemar_subtitulos(ruta_video_entrada, ruta_ass, ruta_video_salida):
         "-c:a", "copy",
         ruta_video_salida,
     ]
-    subprocess.run(cmd, check=True, capture_output=True)
+    _run_ffmpeg(cmd)
 
 
 def recortar_a_medida(imagen, ancho, alto):
