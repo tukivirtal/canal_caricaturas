@@ -237,43 +237,12 @@ def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO
     _run_ffmpeg(cmd)
 
 
-def crear_segmento_escena(imagen_personaje_path, ruta_fondo, audio_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
+def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt"):
     """
-    Igual que crear_segmento, pero para la sesión grupal de video largo:
-    superpone al personaje (recortando su fondo blanco vía colorkey)
-    sobre un fondo de escena ya renderizado (ver generar_fondo_escena),
-    en vez de armar el fondo desde cero en cada línea.
+    Concatena los segmentos en orden usando el demuxer concat de ffmpeg
+    (stream copy, sin reencodear — rápido siempre que compartan códec).
     """
-    altura_personaje = int(alto * 0.85)
-    margen_inferior_personaje = int(alto * 0.05)
-    cmd = [
-        "ffmpeg", "-y",
-        "-loop", "1", "-i", ruta_fondo,
-        "-loop", "1", "-i", imagen_personaje_path,
-        "-i", audio_path,
-        "-filter_complex",
-        f"[1:v]scale=-1:{altura_personaje}[pj];"
-        f"[pj]colorkey=0xFFFFFF:0.15:0.05[pjck];"
-        f"[0:v][pjck]overlay=(W-w)/2:H-h-{margen_inferior_personaje}[final]",
-        "-map", "[final]",
-        "-map", "2:a",
-        "-c:v", "libx264",
-        "-tune", "stillimage",
-        "-c:a", "aac",
-        "-b:a", "192k",
-        "-pix_fmt", "yuv420p",
-        "-shortest",
-        "-preset", "veryfast",
-        salida_path,
-    ]
-    _run_ffmpeg(cmd)
-
-
-def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
-    """
-    Concatena los segmentos en orden usando el demuxer concat de ffmpeg.
-    """
-    lista_txt = os.path.join(work_dir, "lista.txt")
+    lista_txt = os.path.join(work_dir, nombre_lista)
     with open(lista_txt, "w") as f:
         for seg in lista_segmentos:
             f.write(f"file '{seg}'\n")
@@ -284,6 +253,70 @@ def concatenar_segmentos(lista_segmentos, salida_path, work_dir):
         "-safe", "0",
         "-i", lista_txt,
         "-c", "copy",
+        salida_path,
+    ]
+    _run_ffmpeg(cmd)
+
+
+def renderizar_escena(lineas_escena, rutas_imagenes, ruta_fondo, ruta_audio_escena, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
+    """
+    Renderiza una escena ENTERA en un solo comando de ffmpeg: sobre el
+    fondo ya precomputado (ver generar_fondo_escena), superpone a cada
+    personaje único que participa solo durante las ventanas de tiempo
+    en que le toca hablar (filtro overlay con 'enable'), en vez de
+    generar un archivo de video por cada línea de diálogo y concatenar
+    decenas de ellos.
+    """
+    altura_personaje = int(alto * 0.85)
+    margen_inferior_personaje = int(alto * 0.05)
+
+    # Agrupar las ventanas de tiempo (inicio, fin) de cada personaje
+    # único dentro de esta escena — un personaje que habla varias veces
+    # obtiene varias ventanas, pero una sola capa de overlay.
+    ventanas_por_personaje = {}
+    tiempo = 0.0
+    for item in lineas_escena:
+        ventanas_por_personaje.setdefault(item["imagen_clave"], []).append(
+            (tiempo, tiempo + item["duracion"])
+        )
+        tiempo += item["duracion"]
+
+    personajes = list(ventanas_por_personaje.keys())
+
+    cmd = ["ffmpeg", "-y", "-loop", "1", "-i", ruta_fondo]
+    for p in personajes:
+        cmd += ["-loop", "1", "-i", rutas_imagenes[p]]
+    cmd += ["-i", ruta_audio_escena]
+
+    filtro = f"[0:v]scale={ancho}:{alto}[bg0];"
+    nodo_actual = "bg0"
+    for idx, p in enumerate(personajes):
+        entrada_video = idx + 1  # 0 es el fondo
+        enable_expr = "+".join(
+            f"between(t\\,{inicio:.3f}\\,{fin:.3f})" for inicio, fin in ventanas_por_personaje[p]
+        )
+        nodo_char = f"pj{idx}"
+        nodo_siguiente = f"tmp{idx}"
+        filtro += (
+            f"[{entrada_video}:v]scale=-1:{altura_personaje},"
+            f"colorkey=0xFFFFFF:0.15:0.05[{nodo_char}];"
+            f"[{nodo_actual}][{nodo_char}]overlay=(W-w)/2:H-h-{margen_inferior_personaje}:"
+            f"enable='{enable_expr}'[{nodo_siguiente}];"
+        )
+        nodo_actual = nodo_siguiente
+
+    audio_input_idx = len(personajes) + 1
+    cmd += [
+        "-filter_complex", filtro,
+        "-map", f"[{nodo_actual}]",
+        "-map", f"{audio_input_idx}:a",
+        "-c:v", "libx264",
+        "-tune", "stillimage",
+        "-c:a", "aac",
+        "-b:a", "192k",
+        "-pix_fmt", "yuv420p",
+        "-shortest",
+        "-preset", "veryfast",
         salida_path,
     ]
     _run_ffmpeg(cmd)
@@ -698,31 +731,51 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="generando_segmentos")
 
-        # Fase 4: precomputar el fondo (color + prop del parque) UNA sola
-        # vez por combinación, en vez de recrearlo en cada línea.
-        fondos_cache = {}
+        # Fase 4: agrupar las líneas por escena, precomputar el fondo de
+        # cada una (color + prop del parque, una sola vez por combinación)
+        # y concatenar los audios de cada escena en una sola pista.
+        escenas = {}
         for item in lineas_validas:
-            ruta_prop = rutas_props_parque[(item["numero_escena"] - 1) % len(rutas_props_parque)]
-            clave = (item["color_fondo"], ruta_prop)
-            if clave not in fondos_cache:
-                ruta_fondo = os.path.join(work_dir, f"fondo_{len(fondos_cache)}.png")
-                generar_fondo_escena(item["color_fondo"], ruta_prop, ruta_fondo, ANCHO_LARGO, ALTO_LARGO)
-                fondos_cache[clave] = ruta_fondo
-            item["ruta_fondo"] = fondos_cache[clave]
+            escenas.setdefault(item["numero_escena"], []).append(item)
 
-        # Fase 5: generar los segmentos de video en paralelo.
-        def _generar_segmento_linea(item):
-            segmento_path = os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4")
-            crear_segmento_escena(
-                rutas_imagenes[item["imagen_clave"]], item["ruta_fondo"], item["audio_path"], segmento_path,
+        fondos_cache = {}
+        escenas_render = []
+        for numero_escena in sorted(escenas.keys()):
+            lineas_escena = escenas[numero_escena]
+            color_fondo = lineas_escena[0]["color_fondo"]
+            ruta_prop = rutas_props_parque[(numero_escena - 1) % len(rutas_props_parque)]
+            clave_fondo = (color_fondo, ruta_prop)
+            if clave_fondo not in fondos_cache:
+                ruta_fondo = os.path.join(work_dir, f"fondo_{len(fondos_cache)}.png")
+                generar_fondo_escena(color_fondo, ruta_prop, ruta_fondo, ANCHO_LARGO, ALTO_LARGO)
+                fondos_cache[clave_fondo] = ruta_fondo
+
+            ruta_audio_escena = os.path.join(work_dir, f"audio_escena_{numero_escena}.mp3")
+            concatenar_segmentos(
+                [item["audio_path"] for item in lineas_escena], ruta_audio_escena, work_dir,
+                nombre_lista=f"lista_audio_{numero_escena}.txt",
+            )
+
+            escenas_render.append({
+                "lineas": lineas_escena,
+                "ruta_fondo": fondos_cache[clave_fondo],
+                "ruta_audio": ruta_audio_escena,
+                "salida": os.path.join(work_dir, f"escena_{numero_escena:03d}.mp4"),
+            })
+
+        # Fase 5: renderizar cada escena COMPLETA en un solo comando de
+        # ffmpeg (overlay por personaje con ventanas de tiempo), en
+        # paralelo entre escenas — en vez de un archivo de video por
+        # cada línea de diálogo y decenas de procesos de ffmpeg.
+        def _renderizar_escena_item(esc):
+            renderizar_escena(
+                esc["lineas"], rutas_imagenes, esc["ruta_fondo"], esc["ruta_audio"], esc["salida"],
                 ancho=ANCHO_LARGO, alto=ALTO_LARGO,
             )
-            return segmento_path
+            return esc["salida"]
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-            list(executor.map(_generar_segmento_linea, lineas_validas))
-
-        segmentos = [os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4") for item in lineas_validas]
+            segmentos = list(executor.map(_renderizar_escena_item, escenas_render))
 
         actualizar_estado(job_id, estado="concatenando")
 
