@@ -223,13 +223,20 @@ def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO
     parque (banco/árbol, anclado abajo) como una imagen estática. Se
     reutiliza para todas las líneas de una misma escena, en vez de
     recomponer las mismas dos capas de fondo en cada línea.
+
+    El prop se recorta por colorkey contra blanco (mismo criterio que
+    los personajes) — los generadores de imagen no siempre producen un
+    canal alfa real cuando se les pide "fondo transparente"; a veces
+    dibujan directamente el patrón a cuadros que usan los editores para
+    representar transparencia, en vez de transparencia de verdad.
     """
     cmd = [
         "ffmpeg", "-y",
         "-f", "lavfi", "-i", f"color=c={color_fondo}:s={ancho}x{alto}",
         "-i", imagen_prop_path,
         "-filter_complex",
-        f"[1:v]scale={ancho}:-1[prop];[0:v][prop]overlay=0:H-h[final]",
+        f"[1:v]scale={ancho}:-1,colorkey=0xFFFFFF:0.15:0.05[prop];"
+        f"[0:v][prop]overlay=0:H-h[final]",
         "-map", "[final]",
         "-frames:v", "1",
         salida_path,
@@ -237,22 +244,31 @@ def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO
     _run_ffmpeg(cmd)
 
 
-def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt"):
+def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt", recodificar_audio=False):
     """
-    Concatena los segmentos en orden usando el demuxer concat de ffmpeg
-    (stream copy, sin reencodear — rápido siempre que compartan códec).
+    Concatena los segmentos en orden usando el demuxer concat de ffmpeg.
+
+    Por defecto usa stream copy (rápido, sin pérdida de calidad) — bien
+    para concatenar videos que ya comparten códec. Para concatenar
+    muchos MP3 individuales (audio de las líneas dentro de una escena),
+    activar recodificar_audio=True: el copy directo de MP3s arrastra el
+    padding/delay propio de cada archivo, y con decenas de líneas ese
+    desfase se va acumulando — termina notándose como personajes fuera
+    de sincronía a mitad del video. Reencodear fuerza una concatenación
+    a nivel de muestra de audio, sin ese arrastre.
     """
     lista_txt = os.path.join(work_dir, nombre_lista)
     with open(lista_txt, "w") as f:
         for seg in lista_segmentos:
             f.write(f"file '{seg}'\n")
 
+    codec = ["-c:a", "pcm_s16le"] if recodificar_audio else ["-c", "copy"]
     cmd = [
         "ffmpeg", "-y",
         "-f", "concat",
         "-safe", "0",
         "-i", lista_txt,
-        "-c", "copy",
+        *codec,
         salida_path,
     ]
     _run_ffmpeg(cmd)
@@ -750,10 +766,11 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
                 generar_fondo_escena(color_fondo, ruta_prop, ruta_fondo, ANCHO_LARGO, ALTO_LARGO)
                 fondos_cache[clave_fondo] = ruta_fondo
 
-            ruta_audio_escena = os.path.join(work_dir, f"audio_escena_{numero_escena}.mp3")
+            ruta_audio_escena = os.path.join(work_dir, f"audio_escena_{numero_escena}.wav")
             concatenar_segmentos(
                 [item["audio_path"] for item in lineas_escena], ruta_audio_escena, work_dir,
                 nombre_lista=f"lista_audio_{numero_escena}.txt",
+                recodificar_audio=True,
             )
 
             escenas_render.append({
