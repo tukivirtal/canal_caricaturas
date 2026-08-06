@@ -26,6 +26,24 @@ branch de trabajo habitual: `claude/access-permissions-test-4r3j5v`.
 
 ## Ya resuelto en esta sesión (para referencia, no repetir)
 
+- **Render de video largo: de +1 hora a ~1 minuto.** El costo dominante no
+  era el hardware: los personajes entraban al filtro con `-loop 1` (stream
+  infinito) y el `scale` + `colorkey` de CADA personaje se recalculaba en
+  CADA cuadro, aunque solo uno estuviera visible y las imágenes nunca
+  cambien. Ahora los recortes y los fondos se preparan una sola vez
+  (`preparar_recorte_personaje` / `preparar_fondo_escena`) y cada escena se
+  arma pre-componiendo un cuadro por personaje con PIL + demuxer concat,
+  sin composición por cuadro. Medido: escena de 2 min con 5 personajes,
+  461 s → 12 s; guion completo de 123 líneas (8:12 de video), 48 s.
+  También bajó a 12 fps (son imágenes fijas) y `-preset ultrafast`.
+- `/estado` ahora informa `escenas_totales` y `escenas_completadas`, para
+  ver el progreso real sin adivinar con `docker stats`.
+- El paralelismo de render se limita a `os.cpu_count()`: antes lanzaba 3
+  ffmpeg simultáneos en un Codespace de 2 núcleos y se peleaban entre sí,
+  dejando al servidor sin CPU ni para contestar `/estado`.
+- Solo se descargan las imágenes de los personajes que hablan en el guion
+  (antes bajaba las 8 siempre).
+
 - Las 3 imágenes de escena nuevas del parque quedaron listas y cargadas en
   `IMAGENES_ESCENAS_PARQUE` (`app.py`): banco+árbol+mesa de picnic, laguna,
   plaza con juegos (URLs de Cloudinary `dibujo_1_aryiyb`, `dibujo2_ds03jq`,
