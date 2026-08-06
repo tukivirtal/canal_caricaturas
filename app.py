@@ -462,6 +462,37 @@ def recortar_a_medida(imagen, ancho, alto):
     return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
 
 
+def _acortar(texto, limite=100):
+    """Corta a 'limite' caracteres sin partir una palabra al medio."""
+    if len(texto) <= limite:
+        return texto
+    corte = texto[:limite].rsplit(" ", 1)[0]
+    # Si respetar la palabra deja un título mutilado —pasa cuando viene una
+    # sola palabra larguísima— conviene el corte duro.
+    if len(corte) < limite * 0.6:
+        return texto[:limite]
+    return corte
+
+
+def titulo_para_youtube(metadata):
+    """
+    Devuelve el título con el que se va a subir el video.
+
+    Si el guion no trajo 'titulo_seo', el módulo de YouTube Upload sube el
+    video SIN título, y un video sin título son cero impresiones. Antes de
+    permitir eso se arma uno con el tema de la fila: no es un buen título
+    de SEO, pero es infinitamente mejor que ninguno. El arreglo de fondo
+    es que el prompt lo genere.
+    """
+    titulo = (metadata.get("titulo_seo") or "").strip()
+    if titulo:
+        return _acortar(titulo)
+    tema = (metadata.get("tema") or "").strip()
+    if tema:
+        return _acortar(f"El Diván | {tema}")
+    return "El Diván | Terapia con Humor"
+
+
 def limpiar_texto_miniatura(valor):
     """
     Devuelve el texto de la miniatura ya limpio.
@@ -1140,6 +1171,7 @@ def fabricar_video_largo():
         "texto_miniatura": data.get("texto_miniatura"),
         "color_miniatura": data.get("color_miniatura"),
     }
+    metadata["titulo_seo"] = titulo_para_youtube(metadata)
 
     job_id = str(uuid.uuid4())
     with jobs_lock:
