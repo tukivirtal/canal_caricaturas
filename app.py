@@ -29,16 +29,26 @@ app = Flask(__name__)
 # Configuración
 # ---------------------------------------------------------------------------
 
-# URLs fijas de las 3 imágenes de personajes (Cloudinary)
+# URLs fijas de las imágenes de personajes (Cloudinary).
+#
+# Cada personaje tiene DOS dibujos, y no son intercambiables:
+#  - El de Shorts es una escena de consultorio entera (diván, cuadro en la
+#    pared, fondo crema). Se usa tal cual como cuadro completo del video.
+#  - El de video largo ("_LARGO") es el personaje solo, sobre blanco, para
+#    recortarlo por colorkey y pegarlo sobre la escena del parque.
+# Usar el de Shorts en el video largo pegaría el consultorio entero sobre
+# el parque, y encima sin recortar: el colorkey saca blanco, no crema.
 IMAGENES_PERSONAJES = {
     "DOCTOR": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369741/Doctor_elj6ei.png",
     "JUAN": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369743/Juan_c0fmwo.png",
     "MARIA": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785369738/Maria_xbz18p.png",
-    "FABRICIO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725170/Gemini_Generated_Image_seg99fseg99fseg9_tcvyqi.png",
-    "JULI": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725133/Gemini_Generated_Image_seg99fseg99fseg9_jcdt0h.png",
+    "FABRICIO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1786060268/Fabricio_wybzwe.png",
+    "JULI": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1786060150/Juli_g3zsmb.png",
     "DOCTOR_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725570/Gemini_Generated_Image_5ywmko5ywmko5ywm_acmjne.png",
     "JUAN_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726093/Gemini_Generated_Image_o8nvdfo8nvdfo8nv_b8cied.png",
     "MARIA_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726275/Gemini_Generated_Image_rvrvbirvrvbirvrv_jwslcc.png",
+    "FABRICIO_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725170/Gemini_Generated_Image_seg99fseg99fseg9_tcvyqi.png",
+    "JULI_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785725133/Gemini_Generated_Image_seg99fseg99fseg9_jcdt0h.png",
 }
 
 # Imágenes de escena completas del parque (fondo + cielo con degradé ya
@@ -51,15 +61,16 @@ IMAGENES_ESCENAS_PARQUE = [
     "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785973043/dibujo3_s1y2w5.jpg",  # plaza con juegos
 ]
 
-# En video largo, Doctor/Juan/Maria usan una imagen propia distinta a
-# la de los Shorts (misma identidad y misma voz, dibujo separado para
-# que los 5 personajes de la sesión grupal se vean con el mismo estilo
-# palito). Fabricio y Juli comparten la misma imagen en ambos formatos,
-# porque se generaron directamente en ese estilo.
+# Qué dibujo usa cada personaje cuando el formato es video largo. Misma
+# identidad y misma voz que en el Short: cambia el dibujo, no el
+# personaje. Los cinco están acá — si alguno faltara, el video largo
+# usaría su escena de consultorio de Shorts sobre el fondo del parque.
 PERSONAJE_IMAGEN_VIDEO_LARGO = {
     "DOCTOR": "DOCTOR_LARGO",
     "JUAN": "JUAN_LARGO",
     "MARIA": "MARIA_LARGO",
+    "FABRICIO": "FABRICIO_LARGO",
+    "JULI": "JULI_LARGO",
 }
 
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
