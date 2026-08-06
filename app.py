@@ -18,11 +18,10 @@ import threading
 import subprocess
 import tempfile
 import shutil
-import textwrap
 import concurrent.futures
 import requests
 from flask import Flask, request, jsonify
-from PIL import Image, ImageDraw, ImageFont
+from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageFont
 
 app = Flask(__name__)
 
@@ -104,9 +103,13 @@ MARGEN_INFERIOR_PERSONAJE_LARGO = int(ALTO_LARGO * 0.05)
 # de que el video en sí sea vertical.
 ANCHO_MINIATURA = 1280
 ALTO_MINIATURA = 720
-RUTA_FUENTE_MINIATURA = os.path.join(os.path.dirname(__file__), "Anton-Regular.ttf")
+# Tipografía de la miniatura: display redondeada y pesada, el registro
+# que usa el nicho de dibujos de palitos. Anton (condensada, tipo prensa)
+# quedó para los subtítulos. Cambiar de fuente es cambiar esta línea:
+# Baloo2-ExtraBold es la alternativa más limpia del mismo registro.
+RUTA_FUENTE_MINIATURA = os.path.join(os.path.dirname(__file__), "LuckiestGuy-Regular.ttf")
 COLOR_FRANJA_MINIATURA = (20, 20, 20)       # franja casi negra
-COLOR_TEXTO_MINIATURA = (255, 210, 60)      # amarillo/dorado, alto contraste
+COLOR_TEXTO_MINIATURA = (255, 226, 60)      # amarillo, alto contraste
 
 # Estado de jobs en memoria (simple, como en Bienestar Diario)
 jobs = {}
@@ -459,64 +462,195 @@ def recortar_a_medida(imagen, ancho, alto):
     return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
 
 
-def generar_miniatura(ruta_imagen_personaje, texto_miniatura, ruta_salida, color_franja=COLOR_FRANJA_MINIATURA):
+def limpiar_texto_miniatura(valor):
     """
-    Arma la miniatura (1280x720) a partir de la imagen del personaje que
-    abre el video, con una franja superior y el texto gancho en mayúsculas.
+    Devuelve el texto de la miniatura ya limpio.
+
+    El Text parser de Make a veces manda el bundle entero en vez del valor
+    extraído, y llega algo tipo 'META|texto_miniatura|NADIE TE MIRA'. Con
+    ese texto la miniatura sale con basura encima, así que lo recortamos
+    acá también — el arreglo de fondo va en Make, pero no queremos que un
+    bubble mal configurado nos queme el CTR de un video entero.
     """
-    imagen = Image.open(ruta_imagen_personaje).convert("RGB")
-    imagen = recortar_a_medida(imagen, ANCHO_MINIATURA, ALTO_MINIATURA)
-
-    franja_rect = (0, 0, ANCHO_MINIATURA, int(ALTO_MINIATURA * 0.32))
-    overlay = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
-    dibujo_overlay = ImageDraw.Draw(overlay)
-    dibujo_overlay.rectangle(franja_rect, fill=color_franja + (235,))
-    imagen = Image.alpha_composite(imagen.convert("RGBA"), overlay).convert("RGB")
-    dibujo = ImageDraw.Draw(imagen)
-
-    titulo = texto_miniatura.upper()
-    tamano_fuente = int(ANCHO_MINIATURA * 0.09)
-    fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, tamano_fuente)
-    ancho_franja = franja_rect[2] - franja_rect[0]
-    lineas = textwrap.wrap(titulo, width=14)
-
-    while True:
-        anchos = [dibujo.textbbox((0, 0), linea, font=fuente)[2] for linea in lineas]
-        if max(anchos, default=0) <= ancho_franja - 80 or tamano_fuente <= 40:
-            break
-        tamano_fuente -= 5
-        fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, tamano_fuente)
-
-    alto_linea = tamano_fuente * 1.15
-    alto_total_texto = alto_linea * len(lineas)
-    centro_y = (franja_rect[1] + franja_rect[3]) / 2 - alto_total_texto / 2
-    centro_x = (franja_rect[0] + franja_rect[2]) / 2
-
-    for i, linea in enumerate(lineas):
-        ancho_linea = dibujo.textbbox((0, 0), linea, font=fuente)[2]
-        pos_x = centro_x - ancho_linea / 2
-        pos_y = centro_y + (i * alto_linea)
-        dibujo.text((pos_x, pos_y), linea, font=fuente, fill=COLOR_TEXTO_MINIATURA)
-
-    imagen.save(ruta_salida, quality=95)
+    texto = str(valor or "").strip()
+    if texto.upper().startswith("META|"):
+        texto = texto.rsplit("|", 1)[-1].strip()
+    return texto
 
 
-def recortar_a_medida(imagen, ancho, alto):
-    """Escala y recorta la imagen para llenar exactamente ancho x alto
-    (equivalente a PIL.ImageOps.fit, escrito a mano para no sumar otra
-    dependencia)."""
-    ratio_destino = ancho / alto
-    ratio_origen = imagen.width / imagen.height
-    if ratio_origen > ratio_destino:
-        nuevo_alto = alto
-        nuevo_ancho = int(alto * ratio_origen)
+def _recortar_fondo_blanco(imagen, umbral=235):
+    """Vuelve transparente el fondo blanco de la imagen de un personaje.
+
+    Los personajes del video largo ya llegan recortados por ffmpeg, pero
+    los de los Shorts vienen con el blanco original; sin esto quedaría un
+    rectángulo blanco pegado sobre el fondo de la miniatura.
+
+    Solo se saca el blanco CONECTADO AL BORDE: el relleno blanco de la
+    cara o de los ojos queda intacto. Un colorkey plano, que borra todo
+    píxel blanco esté donde esté, deja al personaje con la cabeza
+    transparente.
+
+    Se resuelve con operaciones de canal (en C) y no pixel por pixel:
+    sobre imágenes de 1-2 megapíxeles la diferencia es de segundos."""
+    rojo, verde, azul = imagen.convert("RGB").split()
+    binarizar = lambda canal: canal.point(lambda v: 255 if v >= umbral else 0)
+    blanco = ImageChops.multiply(
+        ImageChops.multiply(binarizar(rojo), binarizar(verde)), binarizar(azul)
+    )
+
+    # Se marca con 128 el blanco alcanzable desde los bordes; lo que
+    # quede en 255 es blanco interior del dibujo y se conserva.
+    ancho, alto = blanco.size
+    borde = [(x, y) for x in range(ancho) for y in (0, alto - 1)]
+    borde += [(x, y) for y in range(alto) for x in (0, ancho - 1)]
+    for punto in borde:
+        if blanco.getpixel(punto) == 255:
+            ImageDraw.floodfill(blanco, punto, 128)
+
+    imagen = imagen.convert("RGBA")
+    imagen.putalpha(blanco.point(lambda v: 0 if v == 128 else 255))
+    return imagen
+
+
+def _ajustar_texto_miniatura(texto, ancho_max, tamano_inicial, max_lineas=2):
+    """Elige el tamaño de fuente más grande con el que el texto entra en
+    ancho_max sin pasarse de max_lineas renglones."""
+    medidor = ImageDraw.Draw(Image.new("RGB", (8, 8)))
+    palabras = texto.split()
+    for tamano in range(tamano_inicial, 44, -4):
+        fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, tamano)
+        lineas, actual = [], ""
+        for palabra in palabras:
+            candidata = f"{actual} {palabra}".strip()
+            if not actual or medidor.textbbox((0, 0), candidata, font=fuente)[2] <= ancho_max:
+                actual = candidata
+            else:
+                lineas.append(actual)
+                actual = palabra
+        lineas.append(actual)
+        if len(lineas) <= max_lineas and all(
+            medidor.textbbox((0, 0), l, font=fuente)[2] <= ancho_max for l in lineas
+        ):
+            return fuente, lineas, tamano
+    fuente = ImageFont.truetype(RUTA_FUENTE_MINIATURA, 44)
+    return fuente, palabras[:max_lineas], 44
+
+
+def _cargar_personaje(ruta):
+    """Abre la imagen de un personaje lista para pegar: con alfa real y
+    recortada a lo que ocupa el dibujo (sin aire alrededor)."""
+    personaje = Image.open(ruta)
+    if personaje.mode != "RGBA" or not personaje.getchannel("A").getbbox():
+        personaje = _recortar_fondo_blanco(personaje)
+    caja = personaje.getchannel("A").getbbox()
+    return personaje.crop(caja) if caja else personaje
+
+
+def generar_miniatura(rutas_personajes, texto_miniatura, ruta_salida,
+                      ruta_fondo=None, color_franja=COLOR_FRANJA_MINIATURA):
+    """
+    Arma la miniatura (1280x720) con el esquema que usa el nicho: el
+    texto gancho arriba, enorme y a todo el ancho, en amarillo con
+    contorno negro grueso; y los personajes parados en fila abajo, sobre
+    el fondo de escena.
+
+    Nada de franja de color con letras adentro: lo que hace legible al
+    texto es el contorno, y ocupar el cuadro entero rinde mucho más. El
+    texto se mantiene arriba, lejos del borde inferior derecho, que es
+    donde YouTube estampa la duración del video.
+
+    'rutas_personajes' puede ser una ruta sola o una lista: en el video
+    largo conviene mandar a todos los que participan, que es justamente
+    lo que da la fila de monigotes de la referencia. Sin 'ruta_fondo'
+    (caso Shorts) se usa un fondo sólido en vez de la escena.
+    """
+    titulo = limpiar_texto_miniatura(texto_miniatura).upper()
+    if isinstance(rutas_personajes, (str, bytes, os.PathLike)):
+        rutas_personajes = [rutas_personajes]
+    rutas_personajes = list(rutas_personajes)[:5]
+
+    if ruta_fondo:
+        fondo = recortar_a_medida(
+            Image.open(ruta_fondo).convert("RGB"), ANCHO_MINIATURA, ALTO_MINIATURA
+        ).convert("RGBA")
     else:
-        nuevo_ancho = ancho
-        nuevo_alto = int(ancho / ratio_origen)
-    imagen = imagen.resize((nuevo_ancho, nuevo_alto))
-    izquierda = (nuevo_ancho - ancho) // 2
-    arriba = (nuevo_alto - alto) // 2
-    return imagen.crop((izquierda, arriba, izquierda + ancho, arriba + alto))
+        fondo = Image.new("RGBA", (ANCHO_MINIATURA, ALTO_MINIATURA), color_franja + (255,))
+
+    # Velo claro que se desvanece hacia abajo: levanta el contraste del
+    # texto sin el borde duro de una caja. Los fondos de escena son
+    # saturados (cielos de atardecer) y sin esto el amarillo pelea.
+    velo = Image.new("RGBA", fondo.size, (0, 0, 0, 0))
+    dibujo_velo = ImageDraw.Draw(velo)
+    alto_velo = int(ALTO_MINIATURA * 0.55)
+    for y in range(alto_velo):
+        dibujo_velo.line(
+            [(0, y), (ANCHO_MINIATURA, y)],
+            fill=(255, 255, 255, int(120 * (1 - y / alto_velo))),
+        )
+    imagen = Image.alpha_composite(fondo, velo)
+
+    # El texto se calcula PRIMERO y se queda con su banda de arriba; los
+    # personajes reciben lo que sobra. Al revés, un título de dos líneas
+    # termina tapando las cabezas.
+    margen = int(ANCHO_MINIATURA * 0.05)
+    fuente, lineas, tamano = _ajustar_texto_miniatura(
+        titulo, ANCHO_MINIATURA - margen * 2, int(ANCHO_MINIATURA * 0.16)
+    )
+    alto_linea = tamano * 1.05
+    pos_y_texto = int(ALTO_MINIATURA * 0.04)
+    piso_texto = pos_y_texto + alto_linea * len(lineas)
+
+    # Personajes en fila abajo, todos a la misma altura, repartidos.
+    personajes = [_cargar_personaje(r) for r in rutas_personajes]
+    if personajes:
+        base_y = int(ALTO_MINIATURA * 0.97)
+        alto_fila = max(int(ALTO_MINIATURA * 0.30),
+                        int(base_y - piso_texto - ALTO_MINIATURA * 0.03))
+        escalados = []
+        for p in personajes:
+            ancho = max(1, int(p.width * alto_fila / p.height))
+            escalados.append(p.resize((ancho, alto_fila)))
+        # Si entre todos no entran a lo ancho, se achican en bloque.
+        ancho_util = int(ANCHO_MINIATURA * 0.94)
+        ancho_total = sum(p.width for p in escalados)
+        if ancho_total > ancho_util:
+            factor = ancho_util / ancho_total
+            escalados = [
+                p.resize((max(1, int(p.width * factor)), max(1, int(p.height * factor))))
+                for p in escalados
+            ]
+            ancho_total = sum(p.width for p in escalados)
+
+        hueco = (ANCHO_MINIATURA - ancho_total) / (len(escalados) + 1)
+        posiciones, x = [], hueco
+        for p in escalados:
+            posiciones.append((int(x), base_y - p.height))
+            x += p.width + hueco
+
+        # Halo oscuro difuso detrás de la fila: los despega del fondo sin
+        # necesidad de recuadros.
+        silueta = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
+        for p, pos in zip(escalados, posiciones):
+            silueta.paste(p, pos, p)
+        halo = Image.new("RGBA", imagen.size, (0, 0, 0, 0))
+        halo.paste((0, 0, 0, 150), (0, 0, *imagen.size),
+                   silueta.split()[3].filter(ImageFilter.GaussianBlur(12)))
+        imagen = Image.alpha_composite(imagen, halo)
+        for p, pos in zip(escalados, posiciones):
+            imagen.paste(p, pos, p)
+
+    # Texto arriba, a todo el ancho, por encima de la fila.
+    dibujo = ImageDraw.Draw(imagen)
+    grosor_contorno = max(7, int(tamano * 0.13))
+    for i, linea in enumerate(lineas):
+        caja = dibujo.textbbox((0, 0), linea, font=fuente, stroke_width=grosor_contorno)
+        pos_x = (ANCHO_MINIATURA - (caja[2] - caja[0])) / 2 - caja[0]
+        dibujo.text(
+            (pos_x, pos_y_texto + i * alto_linea - caja[1]), linea, font=fuente,
+            fill=COLOR_TEXTO_MINIATURA, stroke_width=grosor_contorno, stroke_fill=(0, 0, 0),
+        )
+
+    imagen.convert("RGB").save(ruta_salida, quality=95)
 
 
 def subir_a_cloudinary(archivo_path, public_id, tipo_recurso="video"):
@@ -636,7 +770,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="generando_miniatura")
 
-        texto_miniatura = (metadata.get("texto_miniatura") or "").strip()
+        texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
         imagen_miniatura_url = None
         if texto_miniatura:
             ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
@@ -729,14 +863,12 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         # dejarlas listas para componer (personajes ya recortados, fondos
         # ya escalados). Todo el trabajo de imagen se hace acá, una vez
         # por imagen — no una vez por cuadro dentro del render.
-        rutas_originales = {}
         rutas_imagenes = {}
         for personaje in sorted({item["imagen_clave"] for item in lineas_validas}):
             ruta_origen = os.path.join(work_dir, f"img_{personaje}.png")
             descargar_archivo(IMAGENES_PERSONAJES[personaje], ruta_origen)
             ruta_recorte = os.path.join(work_dir, f"recorte_{personaje}.png")
             preparar_recorte_personaje(ruta_origen, ruta_recorte)
-            rutas_originales[personaje] = ruta_origen
             rutas_imagenes[personaje] = ruta_recorte
 
         fondos_escena = {}
@@ -772,7 +904,6 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             if item["texto"]:
                 bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + item["duracion"], item["texto"]))
             tiempo_acumulado += item["duracion"]
-        hablante_apertura = lineas_validas[0]["imagen_clave"]
 
         actualizar_estado(job_id, estado="generando_segmentos")
 
@@ -848,14 +979,23 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="generando_miniatura")
 
-        texto_miniatura = (metadata.get("texto_miniatura") or "").strip()
+        texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
         imagen_miniatura_url = None
         if texto_miniatura:
             color_miniatura_nombre = str(metadata.get("color_miniatura") or "").strip().lower()
             color_franja = COLORES_MINIATURA_RGB.get(color_miniatura_nombre, COLOR_FRANJA_MINIATURA)
             ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
+            # Todos los que hablan, en el orden en que aparecen: es la
+            # fila de monigotes que da su carácter a la miniatura.
+            personajes_miniatura = list(dict.fromkeys(
+                item["imagen_clave"] for item in lineas_validas
+            ))
             generar_miniatura(
-                rutas_originales[hablante_apertura], texto_miniatura, ruta_miniatura, color_franja=color_franja
+                [rutas_imagenes[p] for p in personajes_miniatura],
+                texto_miniatura,
+                ruta_miniatura,
+                ruta_fondo=fondos_escena[0] if 0 in fondos_escena else next(iter(fondos_escena.values())),
+                color_franja=color_franja,
             )
             public_id_miniatura = f"caricaturas/miniaturas/largo_{fila}_{job_id[:8]}"
             imagen_miniatura_url = subir_a_cloudinary(ruta_miniatura, public_id_miniatura, tipo_recurso="image")
