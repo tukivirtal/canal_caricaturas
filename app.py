@@ -42,15 +42,14 @@ IMAGENES_PERSONAJES = {
     "MARIA_LARGO": "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785726275/Gemini_Generated_Image_rvrvbirvrvbirvrv_jwslcc.png",
 }
 
-# Props del parque, uno por cada una de las 4 escenas de video largo
-# (banco/árbol, plaza con juegos, laguna, mesa de picnic), superpuestos
-# sobre el color sólido que rota por escena. El índice de la lista
-# (0-3) corresponde a "numero" de escena (1-4) menos uno.
-IMAGENES_PROP_PARQUE = [
-    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728004/Gemini_Generated_Image_4fed7s4fed7s4fed_livzxn.png",
-    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728619/Gemini_Generated_Image_db6vpodb6vpodb6v_eplvoh.png",
-    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728750/Gemini_Generated_Image_8iwnq78iwnq78iwn_bzvr5c.png",
-    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785728859/Gemini_Generated_Image_y31bwmy31bwmy31b_ewjnl0.png",
+# Imágenes de escena completas del parque (fondo + cielo con degradé ya
+# incluido, sin recorte de color) que se usan tal cual para las escenas
+# de video largo. El índice de la lista corresponde a "numero" de escena
+# menos uno, ciclando si hay más escenas que imágenes.
+IMAGENES_ESCENAS_PARQUE = [
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785973043/dibujo_1_aryiyb.jpg",  # banco + árbol + mesa de picnic
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785973044/dibujo2_ds03jq.jpg",  # laguna
+    "https://res.cloudinary.com/ddbjsjmzj/image/upload/v1785973043/dibujo3_s1y2w5.jpg",  # plaza con juegos
 ]
 
 # En video largo, Doctor/Juan/Maria usan una imagen propia distinta a
@@ -72,17 +71,8 @@ CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "caricatur
 # Color de fondo pastel que ya usa el Short (imagen del personaje + fondo fijo)
 COLOR_FONDO_DEFAULT = "0xF5E6D3"
 
-# Para los videos largos (sesión grupal), el fondo cambia por escena en vez
-# de ser siempre el mismo pastel. Colores para ffmpeg (formato 0xRRGGBB) y
-# su equivalente en RGB para las miniaturas (PIL).
-COLORES_FONDO = {
-    "rojo": "0xE74C3C",
-    "azul": "0x3498DB",
-    "verde": "0x2ECC71",
-    "violeta": "0x9B59B6",
-    "naranja": "0xE67E22",
-    "amarillo": "0xF1C40F",
-}
+# Colores de franja para las miniaturas (PIL), según el campo
+# 'color_miniatura' de la metadata del video largo.
 COLORES_MINIATURA_RGB = {
     "rojo": (192, 57, 43),
     "azul": (41, 128, 185),
@@ -217,33 +207,6 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO
     _run_ffmpeg(cmd)
 
 
-def generar_fondo_escena(color_fondo, imagen_prop_path, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
-    """
-    Renderiza UNA sola vez la combinación color sólido (cielo) + prop del
-    parque (banco/árbol, anclado abajo) como una imagen estática. Se
-    reutiliza para todas las líneas de una misma escena, en vez de
-    recomponer las mismas dos capas de fondo en cada línea.
-
-    El prop se recorta por colorkey contra blanco (mismo criterio que
-    los personajes) — los generadores de imagen no siempre producen un
-    canal alfa real cuando se les pide "fondo transparente"; a veces
-    dibujan directamente el patrón a cuadros que usan los editores para
-    representar transparencia, en vez de transparencia de verdad.
-    """
-    cmd = [
-        "ffmpeg", "-y",
-        "-f", "lavfi", "-i", f"color=c={color_fondo}:s={ancho}x{alto}",
-        "-i", imagen_prop_path,
-        "-filter_complex",
-        f"[1:v]scale={ancho}:-1,colorkey=0xFFFFFF:0.15:0.05[prop];"
-        f"[0:v][prop]overlay=0:H-h[final]",
-        "-map", "[final]",
-        "-frames:v", "1",
-        salida_path,
-    ]
-    _run_ffmpeg(cmd)
-
-
 def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt", recodificar_audio=False):
     """
     Concatena los segmentos en orden usando el demuxer concat de ffmpeg.
@@ -276,12 +239,11 @@ def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="l
 
 def renderizar_escena(lineas_escena, rutas_imagenes, ruta_fondo, ruta_audio_escena, salida_path, ancho=ANCHO_LARGO, alto=ALTO_LARGO):
     """
-    Renderiza una escena ENTERA en un solo comando de ffmpeg: sobre el
-    fondo ya precomputado (ver generar_fondo_escena), superpone a cada
-    personaje único que participa solo durante las ventanas de tiempo
-    en que le toca hablar (filtro overlay con 'enable'), en vez de
-    generar un archivo de video por cada línea de diálogo y concatenar
-    decenas de ellos.
+    Renderiza una escena ENTERA en un solo comando de ffmpeg: sobre la
+    imagen de fondo de la escena, superpone a cada personaje único que
+    participa solo durante las ventanas de tiempo en que le toca hablar
+    (filtro overlay con 'enable'), en vez de generar un archivo de video
+    por cada línea de diálogo y concatenar decenas de ellos.
     """
     altura_personaje = int(alto * 0.85)
     margen_inferior_personaje = int(alto * 0.05)
@@ -667,8 +629,8 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
     """
     Igual que procesar_caricatura, pero para la sesión grupal de video
-    largo: el fondo de cada línea es un color sólido según la escena a la
-    que pertenece (campo 'color_fondo'), en vez de ser siempre el mismo
+    largo: el fondo de cada línea es la imagen de escena del parque que le
+    corresponde según el número de escena, en vez de ser siempre el mismo
     pastel. Las líneas llegan en el orden en que Make las agregó (escena
     por escena, línea por línea dentro de cada escena) — no se reordenan.
     """
@@ -682,11 +644,11 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             descargar_archivo(url, ruta)
             rutas_imagenes[personaje] = ruta
 
-        rutas_props_parque = []
-        for i, url in enumerate(IMAGENES_PROP_PARQUE):
-            ruta = os.path.join(work_dir, f"prop_parque_{i}.png")
+        rutas_escenas_parque = []
+        for i, url in enumerate(IMAGENES_ESCENAS_PARQUE):
+            ruta = os.path.join(work_dir, f"escena_parque_{i}.jpg")
             descargar_archivo(url, ruta)
-            rutas_props_parque.append(ruta)
+            rutas_escenas_parque.append(ruta)
 
         # Fase 1: resolver los campos de cada línea y descartar las que
         # falten datos, sin tocar ffmpeg todavía.
@@ -697,8 +659,6 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             imagen_clave = PERSONAJE_IMAGEN_VIDEO_LARGO.get(hablante, hablante)
             audio_url = _url_audio(linea)
             texto = str(_campo(linea, "texto", "$4")).strip()
-            color_nombre = str(_campo(linea, "color_fondo", "$2")).strip().lower()
-            color_fondo = COLORES_FONDO.get(color_nombre, COLOR_FONDO_DEFAULT)
             try:
                 numero_escena = int(_campo(linea, "numero", "$1") or 1)
             except ValueError:
@@ -713,7 +673,7 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
             lineas_validas.append({
                 "idx": idx, "imagen_clave": imagen_clave, "audio_url": audio_url,
-                "texto": texto, "color_fondo": color_fondo, "numero_escena": numero_escena,
+                "texto": texto, "numero_escena": numero_escena,
             })
 
         if not lineas_validas:
@@ -747,24 +707,17 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="generando_segmentos")
 
-        # Fase 4: agrupar las líneas por escena, precomputar el fondo de
-        # cada una (color + prop del parque, una sola vez por combinación)
-        # y concatenar los audios de cada escena en una sola pista.
+        # Fase 4: agrupar las líneas por escena (cada escena usa su imagen
+        # de fondo del parque directamente, sin composición previa) y
+        # concatenar los audios de cada escena en una sola pista.
         escenas = {}
         for item in lineas_validas:
             escenas.setdefault(item["numero_escena"], []).append(item)
 
-        fondos_cache = {}
         escenas_render = []
         for numero_escena in sorted(escenas.keys()):
             lineas_escena = escenas[numero_escena]
-            color_fondo = lineas_escena[0]["color_fondo"]
-            ruta_prop = rutas_props_parque[(numero_escena - 1) % len(rutas_props_parque)]
-            clave_fondo = (color_fondo, ruta_prop)
-            if clave_fondo not in fondos_cache:
-                ruta_fondo = os.path.join(work_dir, f"fondo_{len(fondos_cache)}.png")
-                generar_fondo_escena(color_fondo, ruta_prop, ruta_fondo, ANCHO_LARGO, ALTO_LARGO)
-                fondos_cache[clave_fondo] = ruta_fondo
+            ruta_fondo = rutas_escenas_parque[(numero_escena - 1) % len(rutas_escenas_parque)]
 
             ruta_audio_escena = os.path.join(work_dir, f"audio_escena_{numero_escena}.wav")
             concatenar_segmentos(
@@ -775,7 +728,7 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
             escenas_render.append({
                 "lineas": lineas_escena,
-                "ruta_fondo": fondos_cache[clave_fondo],
+                "ruta_fondo": ruta_fondo,
                 "ruta_audio": ruta_audio_escena,
                 "salida": os.path.join(work_dir, f"escena_{numero_escena:03d}.mp4"),
             })
@@ -922,9 +875,9 @@ def fabricar_video_largo():
     sesión grupal):
     {
       "lineas": [
-        {"hablante": "Doctor", "texto": "...", "audio_url": "...", "numero": 1, "color_fondo": "rojo"},
-        {"hablante": "Juan", "texto": "...", "audio_url": "...", "numero": 1, "color_fondo": "rojo"},
-        {"hablante": "Maria", "texto": "...", "audio_url": "...", "numero": 2, "color_fondo": "azul"},
+        {"hablante": "Doctor", "texto": "...", "audio_url": "...", "numero": 1},
+        {"hablante": "Juan", "texto": "...", "audio_url": "...", "numero": 1},
+        {"hablante": "Maria", "texto": "...", "audio_url": "...", "numero": 2},
         ...
       ],
       "fila": 3,

@@ -3,44 +3,40 @@
 Contexto para retomar el trabajo en una sesión nueva. Repo: `tukivirtal/canal_caricaturas`,
 branch de trabajo habitual: `claude/access-permissions-test-4r3j5v`.
 
-## En proceso ahora mismo
-
-1. **Regenerando las 4 imágenes de escena del video largo (parque)** con diseño
-   profesional (colores ricos, degradé de cielo, composición plana y frontal,
-   sin personas, franja de pasto pareja de punta a punta).
-   - Escena "banco + árbol + mesa de picnic": ✅ lista.
-   - Escena "laguna": prompt dado, pendiente de generar.
-   - Escena "plaza con juegos": prompt dado, pendiente de generar.
-   - Falta una cuarta escena si se quiere mantener el set original de 4.
-
-2. **Simplificar `generar_fondo_escena` / `renderizar_escena` en `app.py`**:
-   una vez estén las URLs de Cloudinary de las escenas nuevas, sacar la capa
-   de color rotativo (`color_fondo`) y el colorkey sobre el prop — las
-   imágenes nuevas ya traen su propio cielo con degradé, no hace falta
-   componerlas sobre un color aparte. Usar cada imagen de escena directamente
-   como fondo completo.
-
 ## Bugs/gaps pendientes de resolver
 
-3. **Miniatura con texto roto en Make**: el campo `texto_miniatura` llega
+1. **Miniatura con texto roto en Make**: el campo `texto_miniatura` llega
    como `META|texto_miniatura|...` en vez del valor limpio. Revisar el
    bubble insertado en el Text parser (módulo 113) del Body del HTTP de la
    Automatización C — tiene que ser específicamente `$1`, no el bundle
    completo ni "Fallback Match".
 
-4. **Faltan campos de SEO en video largo**: `titulo_seo`, `descripcion_seo`,
+2. **Faltan campos de SEO en video largo**: `titulo_seo`, `descripcion_seo`,
    `hashtags`, `etiquetas_ocultas` llegan `null` en el resultado — nunca se
    agregaron al prompt de Claude (formato texto plano `META|...`) ni al Body
    del HTTP de la Automatización C. Sin `titulo_seo`, el módulo de YouTube
    Upload en la Automatización D no tiene título para el video.
 
-5. **Rediseñar `generar_miniatura()` en el código**: pasar del esquema
+3. **Rediseñar `generar_miniatura()` en el código**: pasar del esquema
    actual (franja de color sólido + texto) a un esquema tipo Zenn — fondo de
    escena completo (reutilizando las imágenes nuevas) + texto grande
    amarillo/contorno negro montado directamente encima, sin caja de fondo.
+   (Ya tenemos las 3 imágenes de escena nuevas listas — ver commit de
+   simplificación de fondo de video largo.)
 
 ## Ya resuelto en esta sesión (para referencia, no repetir)
 
+- Las 3 imágenes de escena nuevas del parque quedaron listas y cargadas en
+  `IMAGENES_ESCENAS_PARQUE` (`app.py`): banco+árbol+mesa de picnic, laguna,
+  plaza con juegos (URLs de Cloudinary `dibujo_1_aryiyb`, `dibujo2_ds03jq`,
+  `dibujo3_s1y2w5`). El set original de props separados por color/escena
+  quedó reemplazado por estas 3 (antes eran 4 props sueltos); si se quiere
+  una escena distinta más adelante, se agrega un cuarto elemento a la lista.
+- Simplificado el fondo de escena del video largo: se eliminó
+  `generar_fondo_escena` (color sólido + colorkey sobre el prop) y el campo
+  `color_fondo` por línea — ahora cada escena usa directamente su imagen de
+  `IMAGENES_ESCENAS_PARQUE` como fondo completo, sin composición previa ni
+  proceso de ffmpeg extra por escena.
 - Endpoint `/fabricar_video_largo` funcionando end-to-end (probado con 135
   líneas reales, `estado: completado`).
 - Formato horizontal 1920x1080 para video largo (antes heredaba el vertical
