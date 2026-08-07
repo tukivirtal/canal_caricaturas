@@ -33,6 +33,14 @@ branch de trabajo habitual: `claude/access-permissions-test-4r3j5v`.
 
 ## Ya resuelto en esta sesión (para referencia, no repetir)
 
+- **Dibujos de Shorts de Fabricio y Juli cargados**, en el estilo de la
+  serie (escena de consultorio entera, diván, cuadro, fondo crema). Ojo:
+  cada personaje necesita DOS dibujos y no son intercambiables — el de
+  Shorts se usa como cuadro completo, y el `_LARGO` es el personaje solo
+  sobre blanco para recortarlo por colorkey sobre el parque. Los cinco
+  están mapeados en `PERSONAJE_IMAGEN_VIDEO_LARGO`; si a alguno le faltara
+  su `_LARGO`, el video largo le pegaría el consultorio sobre el parque.
+
 - **Miniatura rediseñada al esquema del nicho**: texto gancho arriba,
   enorme y a todo el ancho, en amarillo con contorno negro grueso, y los
   personajes que participan parados en fila abajo sobre el fondo de
