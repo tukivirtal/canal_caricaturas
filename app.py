@@ -1000,6 +1000,10 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="generando_miniatura")
 
         texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
+        # El valor limpio vuelve a metadata para que el webhook informe lo
+        # mismo que quedó dibujado en la miniatura. Si no, Make recibe el
+        # "META|texto_miniatura|..." crudo y lo escribe así en el Sheet.
+        metadata["texto_miniatura"] = texto_miniatura
         imagen_miniatura_url = None
         if texto_miniatura:
             ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
@@ -1229,6 +1233,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="generando_miniatura")
 
         texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
+        # El valor limpio vuelve a metadata para que el webhook informe lo
+        # mismo que quedó dibujado en la miniatura. Si no, Make recibe el
+        # "META|texto_miniatura|..." crudo y lo escribe así en el Sheet.
+        metadata["texto_miniatura"] = texto_miniatura
         imagen_miniatura_url = None
         if texto_miniatura:
             color_miniatura_nombre = str(metadata.get("color_miniatura") or "").strip().lower()
