@@ -13,6 +13,8 @@ Patrón async (igual que Bienestar Diario):
 """
 
 import os
+import re
+import math
 import uuid
 import threading
 import subprocess
@@ -80,6 +82,19 @@ CLOUDINARY_UPLOAD_PRESET = os.environ.get("CLOUDINARY_UPLOAD_PRESET", "caricatur
 
 # Color de fondo pastel que ya usa el Short (imagen del personaje + fondo fijo)
 COLOR_FONDO_DEFAULT = "0xF5E6D3"
+
+# Loudness al que se empareja la voz de todos los personajes (escala EBU
+# R128). YouTube normaliza alrededor de -14 LUFS, pero solo hacia abajo:
+# atenúa lo que llega fuerte y deja como está lo que llega bajo. -16 deja
+# un margen cómodo sin que el canal suene flojo frente a los demás.
+LUFS_OBJETIVO = -16.0
+
+# Tope de la corrección de volumen. Sin él, una medición rara sobre un
+# clip casi mudo amplificaría el ruido de fondo 40 dB. Cuando la
+# corrección necesaria se pasa de este rango, se aplica el tope y se
+# informa: quiere decir que esa voz está mal grabada de origen.
+GANANCIA_MIN_DB = -12.0
+GANANCIA_MAX_DB = 24.0
 
 # Colores de franja para las miniaturas (PIL), según el campo
 # 'color_miniatura' de la metadata del video largo.
@@ -235,13 +250,16 @@ def color_borde_imagen(imagen_path, color_por_defecto=COLOR_FONDO_DEFAULT):
         return color_por_defecto
 
 
-def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None, ancho=ANCHO, alto=ALTO):
+def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None,
+                   ancho=ANCHO, alto=ALTO, ganancia_db=0.0):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
     del audio (usando -shortest, que corta cuando termina el audio).
 
     Sin 'color_fondo' explícito, el relleno sale del borde de la propia
-    imagen (ver color_borde_imagen).
+    imagen (ver color_borde_imagen). La ganancia de audio viaja dentro
+    de este mismo encode, así que emparejar el volumen entre personajes
+    no cuesta una pasada extra.
     """
     if color_fondo is None:
         color_fondo = color_borde_imagen(imagen_path)
@@ -259,9 +277,10 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None, ancho
         "-vf",
         f"scale={ancho}:{alto}:force_original_aspect_ratio=decrease,"
         f"pad={ancho}:{alto}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
-        "-preset", "veryfast",
-        salida_path,
     ]
+    if abs(ganancia_db) >= 0.5:
+        cmd += ["-af", f"volume={ganancia_db:.2f}dB"]
+    cmd += ["-preset", "veryfast", salida_path]
     _run_ffmpeg(cmd)
 
 
@@ -305,6 +324,105 @@ def preparar_recorte_personaje(imagen_personaje_path, salida_path, altura=ALTURA
         salida_path,
     ]
     _run_ffmpeg(cmd)
+
+
+def medir_loudness(audio_path):
+    """
+    Loudness integrado del archivo en LUFS (escala EBU R128), o None si
+    no se pudo medir. Solo decodifica, no escribe nada: cuesta ~35 ms.
+    """
+    resultado = subprocess.run(
+        ["ffmpeg", "-i", audio_path, "-af", "ebur128=framelog=quiet", "-f", "null", "-"],
+        capture_output=True, text=True,
+    )
+    medidas = re.findall(r"I:\s+(-?[\d.]+) LUFS", resultado.stderr)
+    if not medidas:
+        return None
+    valor = float(medidas[-1])
+    # Por debajo de -70 LUFS es silencio o basura: mejor no normalizar
+    # que amplificar ruido de fondo 50 dB.
+    return valor if valor > -70 else None
+
+
+def _combinar_loudness(mediciones):
+    """
+    Combina varias mediciones (lufs, duracion) en una sola.
+
+    El promedio se hace en energía y ponderado por duración, que es como
+    se suma el loudness de verdad — promediar los LUFS directamente daría
+    un número que no corresponde a nada.
+    """
+    energia_total = duracion_total = 0.0
+    for lufs, duracion in mediciones:
+        if lufs is None or duracion <= 0:
+            continue
+        energia_total += (10 ** (lufs / 10)) * duracion
+        duracion_total += duracion
+    if duracion_total == 0 or energia_total <= 0:
+        return None
+    return 10 * math.log10(energia_total / duracion_total)
+
+
+def ganancias_por_personaje(items):
+    """
+    Calcula UNA ganancia en dB por personaje, para que todos entreguen al
+    mismo volumen.
+
+    Las voces de ElevenLabs vienen a niveles muy distintos entre sí
+    (medido en este repo: hasta 18 dB de diferencia), y YouTube atenúa lo
+    que llega fuerte pero NO levanta lo que llega bajo. O sea que un
+    personaje que entrega flojo suena flojo para siempre, y el
+    espectador sube el volumen o se va.
+
+    Se calcula por personaje y no por línea a propósito: en un "Ajá." de
+    medio segundo la medición de loudness es poco confiable, y normalizar
+    línea por línea aplasta las diferencias de intención dentro de un
+    mismo personaje. Así se corrige la voz, no la actuación.
+
+    Devuelve (ganancias, avisos). Los avisos son los casos en que la
+    corrección quedó recortada por el tope de seguridad: ahí el
+    emparejado queda incompleto y hay que revisar esa voz en ElevenLabs.
+    Se informan en el resultado del job en vez de quedar en silencio —
+    una brecha de volumen que nadie ve es justo la que termina publicada.
+    """
+    mediciones = {}
+    for item in items:
+        mediciones.setdefault(item["imagen_clave"], []).append(
+            (item.get("lufs"), item.get("duracion", 0.0))
+        )
+
+    ganancias, avisos = {}, []
+    for personaje, medidas in sorted(mediciones.items()):
+        combinado = _combinar_loudness(medidas)
+        if combinado is None:
+            ganancias[personaje] = 0.0
+            avisos.append(
+                f"{personaje}: no se pudo medir el audio, se deja sin cambios"
+            )
+            continue
+        # El tope evita que una medición rara amplifique ruido de fondo o
+        # deje a un personaje inaudible.
+        necesaria = LUFS_OBJETIVO - combinado
+        acotada = max(GANANCIA_MIN_DB, min(GANANCIA_MAX_DB, necesaria))
+        ganancias[personaje] = acotada
+        if abs(necesaria - acotada) > 0.5:
+            avisos.append(
+                f"{personaje}: entrega {combinado:.1f} LUFS y necesitaba "
+                f"{necesaria:+.1f} dB, pero el tope permite {acotada:+.1f} dB — "
+                f"va a seguir sonando distinto al resto, conviene revisar esa voz"
+            )
+    return ganancias, avisos
+
+
+def aplicar_ganancia(entrada_path, salida_path, ganancia_db):
+    """Reescribe el audio con la ganancia aplicada. Cuesta ~10 ms."""
+    _run_ffmpeg([
+        "ffmpeg", "-y",
+        "-i", entrada_path,
+        "-af", f"volume={ganancia_db:.2f}dB",
+        "-ar", "44100",
+        salida_path,
+    ])
 
 
 def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt", recodificar_audio=False):
@@ -789,7 +907,6 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         lineas_ordenadas = sorted(
             lineas, key=lambda x: int(_campo(x, "orden", "Bundle order position") or 0)
         )
-        hablante_apertura = None
 
         # Descargar las 3 imágenes de personajes una sola vez
         rutas_imagenes = {}
@@ -800,18 +917,17 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="generando_segmentos")
 
-        segmentos = []
-        bloques_subtitulos = []
-        tiempo_acumulado = 0.0
+        # Fase 1: resolver los campos de cada línea, sin tocar la red
+        # todavía. Una línea puntual mal formada (hablante desconocido o
+        # sin audio_url) no debe tirar abajo el render entero — se salta
+        # esa línea y se sigue con el resto.
+        lineas_validas = []
         lineas_saltadas = []
         for idx, linea in enumerate(lineas_ordenadas):
             hablante = str(_campo(linea, "hablante", "$1")).strip().upper()
             audio_url = _url_audio(linea)
             texto = str(_campo(linea, "texto", "$2")).strip()
 
-            # Una línea puntual mal formada (hablante desconocido o sin
-            # audio_url) no debe tirar abajo el render entero — se salta
-            # esa línea y se sigue con el resto.
             if hablante not in rutas_imagenes or not audio_url:
                 lineas_saltadas.append(
                     f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}', "
@@ -819,26 +935,53 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
                 )
                 continue
 
-            audio_path = os.path.join(work_dir, f"audio_{idx}.mp3")
-            descargar_archivo(audio_url, audio_path)
-            duracion = obtener_duracion(audio_path)
+            lineas_validas.append({
+                "idx": idx, "imagen_clave": hablante,
+                "audio_url": audio_url, "texto": texto,
+            })
 
-            if texto:
-                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + duracion, texto))
-            tiempo_acumulado += duracion
-
-            segmento_path = os.path.join(work_dir, f"segmento_{idx:03d}.mp4")
-            crear_segmento(rutas_imagenes[hablante], audio_path, segmento_path)
-            segmentos.append(segmento_path)
-            if hablante_apertura is None:
-                hablante_apertura = hablante
-
-        if not segmentos:
+        if not lineas_validas:
             raise ValueError(
                 f"Ninguna línea del guion se pudo procesar (se recibieron "
                 f"{len(lineas_ordenadas)} líneas en total). Líneas descartadas: "
                 + "; ".join(lineas_saltadas)
             )
+
+        # Fase 2: descargar los audios en paralelo (son independientes
+        # entre sí) y medir duración y loudness de cada uno.
+        def _descargar_audio_linea(item):
+            audio_path = os.path.join(work_dir, f"audio_{item['idx']}.mp3")
+            descargar_archivo(item["audio_url"], audio_path)
+            item["audio_path"] = audio_path
+            item["duracion"] = obtener_duracion(audio_path)
+            item["lufs"] = medir_loudness(audio_path)
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            lineas_validas = list(executor.map(_descargar_audio_linea, lineas_validas))
+
+        ganancias, avisos_audio = ganancias_por_personaje(lineas_validas)
+
+        # Fase 3: un clip por línea, en el orden original (los tiempos de
+        # subtítulo se acumulan y dependen de ese orden).
+        segmentos = []
+        bloques_subtitulos = []
+        tiempo_acumulado = 0.0
+        for item in lineas_validas:
+            if item["texto"]:
+                bloques_subtitulos.append(
+                    (tiempo_acumulado, tiempo_acumulado + item["duracion"], item["texto"])
+                )
+            tiempo_acumulado += item["duracion"]
+
+            segmento_path = os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4")
+            crear_segmento(
+                rutas_imagenes[item["imagen_clave"]], item["audio_path"], segmento_path,
+                ganancia_db=ganancias.get(item["imagen_clave"], 0.0),
+            )
+            segmentos.append(segmento_path)
+
+        hablante_apertura = lineas_validas[0]["imagen_clave"]
 
         actualizar_estado(job_id, estado="concatenando")
 
@@ -881,6 +1024,7 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             # que el módulo de Google Sheets en Make apunte a este campo.
             "fila_hoja": int(fila) + 1,
             "lineas_saltadas": lineas_saltadas,
+            "avisos_audio": avisos_audio,
             **metadata,
         }
         actualizar_estado(**resultado)
@@ -971,16 +1115,35 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="descargando_audios")
 
         # Fase 2: descargar todos los audios en paralelo (independientes
-        # entre sí) y medir su duración.
+        # entre sí), medir su duración y su loudness.
         def _descargar_audio_linea(item):
             audio_path = os.path.join(work_dir, f"audio_{item['idx']}.mp3")
             descargar_archivo(item["audio_url"], audio_path)
             item["audio_path"] = audio_path
             item["duracion"] = obtener_duracion(audio_path)
+            item["lufs"] = medir_loudness(audio_path)
             return item
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             lineas_validas = list(executor.map(_descargar_audio_linea, lineas_validas))
+
+        # Fase 2b: emparejar el volumen de los personajes entre sí. Cada
+        # voz de ElevenLabs entrega a un nivel distinto, y el que entrega
+        # bajo va a sonar bajo en YouTube para siempre (ver
+        # ganancias_por_personaje).
+        ganancias, avisos_audio = ganancias_por_personaje(lineas_validas)
+
+        def _normalizar_audio_linea(item):
+            ganancia = ganancias.get(item["imagen_clave"], 0.0)
+            if abs(ganancia) < 0.5:
+                return item
+            salida = os.path.join(work_dir, f"audio_norm_{item['idx']}.wav")
+            aplicar_ganancia(item["audio_path"], salida, ganancia)
+            item["audio_path"] = salida
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            lineas_validas = list(executor.map(_normalizar_audio_linea, lineas_validas))
 
         # Fase 3: timing acumulado de subtítulos, secuencial y en el orden
         # original (necesita el orden real para que los tiempos den bien).
@@ -1099,6 +1262,7 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             "fila": fila,
             "fila_hoja": int(fila) + 1,
             "lineas_saltadas": lineas_saltadas,
+            "avisos_audio": avisos_audio,
             **metadata,
         }
         actualizar_estado(**resultado)

@@ -33,6 +33,23 @@ branch de trabajo habitual: `claude/access-permissions-test-4r3j5v`.
 
 ## Ya resuelto en esta sesión (para referencia, no repetir)
 
+- **Volumen emparejado entre personajes** (Shorts y video largo). Las
+  voces de ElevenLabs entregan a niveles muy distintos, y YouTube atenúa
+  lo que llega fuerte pero NO levanta lo que llega bajo: el personaje
+  flojo suena flojo para siempre. Ahora se mide el loudness de cada línea
+  y se aplica **una ganancia por personaje** (no por línea: en un "Ajá."
+  de medio segundo la medición no es confiable, y por línea se aplasta la
+  intención). Objetivo -16 LUFS, tope de seguridad -12/+24 dB.
+  - Si el tope recorta la corrección, **se avisa** en el campo
+    `avisos_audio` del resultado en vez de dejar la brecha en silencio:
+    quiere decir que esa voz está mal grabada de origen.
+  - Con esto, elegir voces "más fuertes" deja de ser necesario: se puede
+    volver a una sola voz por personaje en Shorts y en largos, elegida
+    por cómo suena y no por cuánto entrega.
+  - El flujo de Shorts pasó a fases (parsear → descargar en paralelo →
+    medir → renderizar), igual que el de largos. De paso las descargas
+    dejaron de ser secuenciales.
+
 - **Subtítulos prolijos**: el estilo declaraba `Arial`, que no está en la
   imagen `python:3.11-slim` — libass caía a cualquier fuente disponible y
   el render cambiaba de un rebuild a otro. Ahora el Dockerfile instala
