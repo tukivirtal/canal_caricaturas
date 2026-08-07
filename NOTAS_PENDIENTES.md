@@ -33,6 +33,21 @@ branch de trabajo habitual: `claude/access-permissions-test-4r3j5v`.
 
 ## Ya resuelto en esta sesión (para referencia, no repetir)
 
+- **Subtítulos prolijos**: el estilo declaraba `Arial`, que no está en la
+  imagen `python:3.11-slim` — libass caía a cualquier fuente disponible y
+  el render cambiaba de un rebuild a otro. Ahora el Dockerfile instala
+  `fonts-dejavu-core` y el estilo pide `DejaVu Sans` en negrita. En video
+  largo la fuente pasó de 2.8% a 4.2% del alto (30px → 45px sobre 1080p)
+  y el contorno de 3 a 4.
+- **El subtítulo ya no cae sobre las piernas del personaje**: con el pie a
+  5% del borde, el personaje llegaba a y=1026 y el renglón quedaba encima.
+  Ahora mide 80% del alto con 12% de margen: pie en y=950, texto debajo.
+- **Se fue la banda del relleno en los Shorts**: la escena es 3:4 y el
+  video 9:16, así que se rellena arriba y abajo. El color era fijo
+  (`#F5E6D3`), y cualquier dibujo con otro crema mostraba la costura.
+  `color_borde_imagen` toma el color del borde de la propia imagen, así
+  que cada personaje rellena con el suyo y no hay nada que medir a mano.
+
 - **Dibujos de Shorts de Fabricio y Juli cargados**, en el estilo de la
   serie (escena de consultorio entera, diván, cuadro, fondo crema). Ojo:
   cada personaje necesita DOS dibujos y no son intercambiables — el de

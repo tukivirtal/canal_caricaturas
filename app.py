@@ -107,8 +107,13 @@ FPS_LARGO = 12
 
 # Medidas del personaje dentro del cuadro del video largo. Se calculan una
 # sola vez acá porque los recortes se precomputan antes de renderizar.
-ALTURA_PERSONAJE_LARGO = int(ALTO_LARGO * 0.85)
-MARGEN_INFERIOR_PERSONAJE_LARGO = int(ALTO_LARGO * 0.05)
+#
+# El margen inferior le deja lugar a los subtítulos: con el pie a 5% del
+# borde, el personaje llegaba hasta y=1026 y el subtítulo caía justo
+# sobre sus piernas. Con estas medidas el pie queda en y=950 y el
+# renglón de subtítulo arranca debajo.
+ALTURA_PERSONAJE_LARGO = int(ALTO_LARGO * 0.80)
+MARGEN_INFERIOR_PERSONAJE_LARGO = int(ALTO_LARGO * 0.12)
 
 # Tamaño estándar de miniatura de YouTube (horizontal 16:9), independiente
 # de que el video en sí sea vertical.
@@ -206,11 +211,40 @@ def obtener_duracion(ruta_audio):
     return float(resultado.stdout.strip())
 
 
-def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=COLOR_FONDO_DEFAULT, ancho=ANCHO, alto=ALTO):
+def color_borde_imagen(imagen_path, color_por_defecto=COLOR_FONDO_DEFAULT):
+    """
+    Devuelve el color del borde de la imagen, en formato ffmpeg (0xRRGGBB).
+
+    La escena del Short es 3:4 y el video es 9:16, así que la imagen se
+    achica para entrar y el resto se rellena. Con un color fijo, cualquier
+    dibujo cuyo crema no fuera exactamente ese quedaba con una banda
+    visible arriba y abajo — y cada personaje puede traer el suyo apenas
+    distinto. Tomando el color del propio borde, el relleno siempre
+    coincide y la costura desaparece sola.
+    """
+    try:
+        with Image.open(imagen_path) as imagen:
+            muestra = imagen.convert("RGB").crop(
+                (0, 0, min(8, imagen.width), min(8, imagen.height))
+            )
+        rojo, verde, azul = muestra.resize((1, 1)).getpixel((0, 0))
+        return f"0x{rojo:02X}{verde:02X}{azul:02X}"
+    except Exception:
+        # Un dibujo ilegible no debería tumbar el render: se rellena con
+        # el crema de siempre y sigue.
+        return color_por_defecto
+
+
+def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None, ancho=ANCHO, alto=ALTO):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
     del audio (usando -shortest, que corta cuando termina el audio).
+
+    Sin 'color_fondo' explícito, el relleno sale del borde de la propia
+    imagen (ver color_borde_imagen).
     """
+    if color_fondo is None:
+        color_fondo = color_borde_imagen(imagen_path)
     cmd = [
         "ffmpeg", "-y",
         "-loop", "1",
@@ -378,6 +412,14 @@ def _formato_ass(segundos):
     return f"{horas}:{minutos:02d}:{segs:02d}.{centesimas:02d}"
 
 
+# Los subtítulos se queman con libass, que resuelve el nombre de la
+# fuente por fontconfig. Declarar "Arial" era pedir algo que no está
+# instalado en la imagen: libass caía a cualquier fuente disponible y el
+# render dependía de con qué se armara el contenedor. DejaVu Sans viene
+# del paquete fonts-dejavu-core del Dockerfile y tiene los acentos y la
+# eñe que el español necesita.
+FUENTE_SUBTITULOS = "DejaVu Sans"
+
 # Tamaño de fuente pensado como pie de página: relativamente chico (2.5%
 # de la altura del video) para que una línea de diálogo completa entre
 # cómoda en 1-2 renglones, sin tapar la escena. Al declarar PlayResX/
@@ -396,15 +438,17 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{TAMANO_FUENTE_SUBTITULOS},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,2,{MARGEN_LATERAL_SUBTITULOS},{MARGEN_LATERAL_SUBTITULOS},{MARGEN_INFERIOR_SUBTITULOS},1
+Style: Default,{FUENTE_SUBTITULOS},{TAMANO_FUENTE_SUBTITULOS},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,3,1,2,{MARGEN_LATERAL_SUBTITULOS},{MARGEN_LATERAL_SUBTITULOS},{MARGEN_INFERIOR_SUBTITULOS},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 """
 
-# Mismo criterio para el video largo (horizontal), con su propia
-# resolución declarada explícitamente.
-TAMANO_FUENTE_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.028)
+# En el video largo el subtítulo no es un pie de página decorativo: es
+# el texto que sigue quien mira sin audio, durante 8 minutos. Al 2.8% de
+# la altura quedaba en 30px sobre 1080p, chico de más para el formato
+# horizontal. Al 4.2% son 45px, que es lo que usa el resto del formato.
+TAMANO_FUENTE_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.042)
 MARGEN_INFERIOR_SUBTITULOS_LARGO = int(ALTO_LARGO * 0.08)
 MARGEN_LATERAL_SUBTITULOS_LARGO = int(ANCHO_LARGO * 0.08)
 
@@ -416,7 +460,7 @@ ScaledBorderAndShadow: yes
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,{TAMANO_FUENTE_SUBTITULOS_LARGO},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,3,0,2,{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_INFERIOR_SUBTITULOS_LARGO},1
+Style: Default,{FUENTE_SUBTITULOS},{TAMANO_FUENTE_SUBTITULOS_LARGO},&H00FFFFFF,&H000000FF,&H00000000,&H00000000,-1,0,0,0,100,100,0,0,1,4,1,2,{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_LATERAL_SUBTITULOS_LARGO},{MARGEN_INFERIOR_SUBTITULOS_LARGO},1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
