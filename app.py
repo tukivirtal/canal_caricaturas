@@ -123,12 +123,13 @@ FPS_LARGO = 12
 # Medidas del personaje dentro del cuadro del video largo. Se calculan una
 # sola vez acá porque los recortes se precomputan antes de renderizar.
 #
-# El margen inferior le deja lugar a los subtítulos: con el pie a 5% del
-# borde, el personaje llegaba hasta y=1026 y el subtítulo caía justo
-# sobre sus piernas. Con estas medidas el pie queda en y=950 y el
-# renglón de subtítulo arranca debajo.
+# El pie va cerca del borde inferior porque ahí está el pasto en las tres
+# escenas del parque: subirlo para despejar la zona del subtítulo deja al
+# personaje flotando sobre el piso, que se nota mucho más que el subtítulo
+# cruzándole las piernas. El subtítulo se apoya en su contorno negro para
+# leerse sobre las piernas, que son líneas finas.
 ALTURA_PERSONAJE_LARGO = int(ALTO_LARGO * 0.80)
-MARGEN_INFERIOR_PERSONAJE_LARGO = int(ALTO_LARGO * 0.12)
+MARGEN_INFERIOR_PERSONAJE_LARGO = int(ALTO_LARGO * 0.05)
 
 # Tamaño estándar de miniatura de YouTube (horizontal 16:9), independiente
 # de que el video en sí sea vertical.
@@ -1000,6 +1001,10 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="generando_miniatura")
 
         texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
+        # El valor limpio vuelve a metadata para que el webhook informe lo
+        # mismo que quedó dibujado en la miniatura. Si no, Make recibe el
+        # "META|texto_miniatura|..." crudo y lo escribe así en el Sheet.
+        metadata["texto_miniatura"] = texto_miniatura
         imagen_miniatura_url = None
         if texto_miniatura:
             ruta_miniatura = os.path.join(work_dir, "miniatura.jpg")
@@ -1145,24 +1150,36 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
             lineas_validas = list(executor.map(_normalizar_audio_linea, lineas_validas))
 
-        # Fase 3: timing acumulado de subtítulos, secuencial y en el orden
-        # original (necesita el orden real para que los tiempos den bien).
-        bloques_subtitulos = []
-        tiempo_acumulado = 0.0
-        for item in lineas_validas:
-            if item["texto"]:
-                bloques_subtitulos.append((tiempo_acumulado, tiempo_acumulado + item["duracion"], item["texto"]))
-            tiempo_acumulado += item["duracion"]
-
         actualizar_estado(job_id, estado="generando_segmentos")
 
-        # Fase 4: agrupar las líneas por escena (cada escena usa su imagen
-        # de fondo del parque directamente, sin composición previa) y
-        # concatenar los audios de cada escena en una sola pista.
+        # Fase 3: agrupar las líneas por escena. El video se arma escena
+        # por escena y las escenas se concatenan en orden ascendente, así
+        # que ESTE es el orden real en que se va a ver y escuchar todo.
         escenas = {}
         for item in lineas_validas:
             escenas.setdefault(item["numero_escena"], []).append(item)
 
+        # Los subtítulos se cronometran sobre esa misma secuencia, no
+        # sobre el orden en que llegaron las líneas. Si Make manda las
+        # líneas sin agrupar por escena, las dos secuencias no coinciden
+        # y el subtítulo termina mostrando la línea de un personaje
+        # mientras en pantalla está el otro. Recorriendo lo mismo que se
+        # renderiza, la sincronía no depende de cómo llegue el guion.
+        lineas_en_orden_de_render = [
+            item for numero_escena in sorted(escenas.keys())
+            for item in escenas[numero_escena]
+        ]
+
+        bloques_subtitulos = []
+        tiempo_acumulado = 0.0
+        for item in lineas_en_orden_de_render:
+            if item["texto"]:
+                bloques_subtitulos.append(
+                    (tiempo_acumulado, tiempo_acumulado + item["duracion"], item["texto"])
+                )
+            tiempo_acumulado += item["duracion"]
+
+        # Fase 4: concatenar el audio de cada escena en una sola pista.
         escenas_render = []
         for numero_escena in sorted(escenas.keys()):
             lineas_escena = escenas[numero_escena]
@@ -1229,6 +1246,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         actualizar_estado(job_id, estado="generando_miniatura")
 
         texto_miniatura = limpiar_texto_miniatura(metadata.get("texto_miniatura"))
+        # El valor limpio vuelve a metadata para que el webhook informe lo
+        # mismo que quedó dibujado en la miniatura. Si no, Make recibe el
+        # "META|texto_miniatura|..." crudo y lo escribe así en el Sheet.
+        metadata["texto_miniatura"] = texto_miniatura
         imagen_miniatura_url = None
         if texto_miniatura:
             color_miniatura_nombre = str(metadata.get("color_miniatura") or "").strip().lower()
