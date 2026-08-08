@@ -681,6 +681,58 @@ def titulo_para_youtube(metadata):
     return "El Diván | Terapia con Humor"
 
 
+def etiquetas_para_youtube(metadata):
+    """
+    Devuelve las etiquetas con las que se sube el video.
+
+    YouTube pide 'tags' como campo OBLIGATORIO: si llega vacío, el módulo
+    de Upload corta la ejecución y el video no se sube — y como el resto
+    de la automatización va detrás, tampoco se registra nada en el Sheet.
+    Mientras el prompt no genere 'etiquetas_ocultas', se arman con el tema
+    y el concepto de la fila. No es SEO, es un piso para que nada se
+    bloquee.
+    """
+    etiquetas = (metadata.get("etiquetas_ocultas") or "").strip()
+    if etiquetas:
+        return _acortar(etiquetas, 480)
+
+    base = ["psicologia animada", "terapia", "humor cinico", "salud mental",
+            "psicologia cotidiana", "neurosis moderna"]
+    for clave in ("concepto_psicologico", "tema"):
+        valor = (metadata.get(clave) or "").strip()
+        if valor:
+            base.append(valor.lower())
+    # YouTube corta las etiquetas a 500 caracteres en total.
+    return _acortar(", ".join(base), 480)
+
+
+def descripcion_para_youtube(metadata):
+    """
+    Devuelve la descripción del video.
+
+    Mismo criterio que el título y las etiquetas: si el guion no la trajo,
+    se arma una con el tema y el concepto de la fila. Una descripción
+    pobre posiciona mal; una vacía desperdicia el espacio donde YouTube
+    busca de qué trata el video.
+    """
+    descripcion = (metadata.get("descripcion_seo") or "").strip()
+    if descripcion:
+        return descripcion
+
+    tema = (metadata.get("tema") or "").strip()
+    concepto = (metadata.get("concepto_psicologico") or "").strip()
+    partes = []
+    if tema:
+        partes.append(f"Hoy en El Diván: {tema}.")
+    if concepto:
+        partes.append(f"El concepto detrás de eso se llama {concepto}.")
+    partes.append(
+        "Psicología real explicada sin solemnidad, con un terapeuta cínico y "
+        "pacientes que sobrepiensan todo. Suscríbete si te sentiste identificado."
+    )
+    return "\n\n".join(partes)
+
+
 def limpiar_texto_miniatura(valor):
     """
     Devuelve el texto de la miniatura ya limpio.
@@ -1442,7 +1494,12 @@ def fabricar_video_largo():
         "texto_miniatura": data.get("texto_miniatura"),
         "color_miniatura": data.get("color_miniatura"),
     }
+    # YouTube pide título y etiquetas sí o sí; sin ellos el Upload corta la
+    # ejecución y no se sube nada. Se completan acá para que un campo que el
+    # prompt todavía no genera no bloquee el pipeline entero.
     metadata["titulo_seo"] = titulo_para_youtube(metadata)
+    metadata["etiquetas_ocultas"] = etiquetas_para_youtube(metadata)
+    metadata["descripcion_seo"] = descripcion_para_youtube(metadata)
 
     job_id = str(uuid.uuid4())
     with jobs_lock:
