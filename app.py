@@ -252,15 +252,16 @@ def color_borde_imagen(imagen_path, color_por_defecto=COLOR_FONDO_DEFAULT):
 
 
 def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None,
-                   ancho=ANCHO, alto=ALTO, ganancia_db=0.0):
+                   ancho=ANCHO, alto=ALTO):
     """
     Crea un clip de video: la imagen fija durante la duración exacta
     del audio (usando -shortest, que corta cuando termina el audio).
 
+    El audio llega ya normalizado desde preparar_audio_linea, así que
+    acá no se toca el volumen.
+
     Sin 'color_fondo' explícito, el relleno sale del borde de la propia
-    imagen (ver color_borde_imagen). La ganancia de audio viaja dentro
-    de este mismo encode, así que emparejar el volumen entre personajes
-    no cuesta una pasada extra.
+    imagen (ver color_borde_imagen).
     """
     if color_fondo is None:
         color_fondo = color_borde_imagen(imagen_path)
@@ -279,8 +280,6 @@ def crear_segmento(imagen_path, audio_path, salida_path, color_fondo=None,
         f"scale={ancho}:{alto}:force_original_aspect_ratio=decrease,"
         f"pad={ancho}:{alto}:(ow-iw)/2:(oh-ih)/2:color={color_fondo}",
     ]
-    if abs(ganancia_db) >= 0.5:
-        cmd += ["-af", f"volume={ganancia_db:.2f}dB"]
     cmd += ["-preset", "veryfast", salida_path]
     _run_ffmpeg(cmd)
 
@@ -415,15 +414,30 @@ def ganancias_por_personaje(items):
     return ganancias, avisos
 
 
-def aplicar_ganancia(entrada_path, salida_path, ganancia_db):
-    """Reescribe el audio con la ganancia aplicada. Cuesta ~10 ms."""
+def preparar_audio_linea(entrada_path, salida_wav, ganancia_db=0.0):
+    """
+    Decodifica la línea a WAV aplicándole su ganancia, y devuelve la
+    duración exacta del resultado.
+
+    Se hace SIEMPRE, aunque la ganancia sea cero, porque el WAV es el que
+    fija la línea de tiempo. En un MP3 la duración que declara el
+    contenedor no coincide con la que sale al decodificarlo: medido acá,
+    unos 44 ms de más por archivo. Cronometrar los subtítulos y los
+    cambios de personaje con la duración declarada mientras suena la
+    decodificada desfasa el video de a poco — en un guion de 142 líneas,
+    más de 6 segundos, o sea un turno entero de diálogo.
+
+    Midiendo sobre el WAV la duración es exacta (muestras / frecuencia) y
+    es la misma que después se concatena, así que no hay nada que derive.
+    """
     _run_ffmpeg([
         "ffmpeg", "-y",
         "-i", entrada_path,
         "-af", f"volume={ganancia_db:.2f}dB",
         "-ar", "44100",
-        salida_path,
+        salida_wav,
     ])
+    return obtener_duracion(salida_wav)
 
 
 def concatenar_segmentos(lista_segmentos, salida_path, work_dir, nombre_lista="lista.txt", recodificar_audio=False):
@@ -963,6 +977,22 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
 
         ganancias, avisos_audio = ganancias_por_personaje(lineas_validas)
 
+        # Fase 2b: cada línea pasa a WAV con su ganancia. Además de
+        # emparejar el volumen, es lo que le da a la línea una duración
+        # exacta: el clip dura lo que dura su audio decodificado, y si
+        # los subtítulos se cronometran con la duración que declara el
+        # MP3, se van desfasando de a milisegundos por línea.
+        def _normalizar_audio_linea(item):
+            salida = os.path.join(work_dir, f"audio_norm_{item['idx']}.wav")
+            item["duracion"] = preparar_audio_linea(
+                item["audio_path"], salida, ganancias.get(item["imagen_clave"], 0.0)
+            )
+            item["audio_path"] = salida
+            return item
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
+            lineas_validas = list(executor.map(_normalizar_audio_linea, lineas_validas))
+
         # Fase 3: un clip por línea, en el orden original (los tiempos de
         # subtítulo se acumulan y dependen de ese orden).
         segmentos = []
@@ -978,7 +1008,6 @@ def procesar_caricatura(job_id, lineas, fila, metadata, webhook_url):
             segmento_path = os.path.join(work_dir, f"segmento_{item['idx']:03d}.mp4")
             crear_segmento(
                 rutas_imagenes[item["imagen_clave"]], item["audio_path"], segmento_path,
-                ganancia_db=ganancias.get(item["imagen_clave"], 0.0),
             )
             segmentos.append(segmento_path)
 
@@ -1138,12 +1167,14 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
         # ganancias_por_personaje).
         ganancias, avisos_audio = ganancias_por_personaje(lineas_validas)
 
+        # Se pasa por acá SIEMPRE, aun sin ganancia que aplicar: además de
+        # emparejar el volumen, es lo que fija la duración exacta de cada
+        # línea (ver preparar_audio_linea).
         def _normalizar_audio_linea(item):
-            ganancia = ganancias.get(item["imagen_clave"], 0.0)
-            if abs(ganancia) < 0.5:
-                return item
             salida = os.path.join(work_dir, f"audio_norm_{item['idx']}.wav")
-            aplicar_ganancia(item["audio_path"], salida, ganancia)
+            item["duracion"] = preparar_audio_linea(
+                item["audio_path"], salida, ganancias.get(item["imagen_clave"], 0.0)
+            )
             item["audio_path"] = salida
             return item
 
