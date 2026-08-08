@@ -34,23 +34,30 @@ campos suelen tener la respuesta.
 
 ## Pendiente — todo en Make y Sheets, nada de código
 
-### 1. Faltan las columnas de SEO en la pestaña de videos largos
+### 1. Columnas de SEO en la pestaña de videos largos — HECHO, con secuela
 
-Hoy la pestaña llega hasta `K: Fecha`. Hay que agregar **al final** (si se
-insertan en el medio se corren los índices y el prompt deja de apuntar a
-Tema y Concepto):
-
-```
-L: Título SEO   M: Descripción SEO   N: Hashtags   O: Etiquetas Ocultas   P: Titulos Usados
-```
-
-Y en **P2**, para la lista anti-repetición:
+Ya se agregaron `Titulo Seo`, `Descripción Seo` y `Etiquetas`, pero se
+insertaron **en el medio** (G, H, I), así que el layout quedó:
 
 ```
-=ARRAYFORMULA(IF(A2:A<>""; TEXTJOIN(CHAR(10); TRUE; $L$2:$L); ""))
+A ID · B Estado · C Tema · D Concepto · E Personajes · F Escena 1-4
+G Titulo Seo · H Descripción Seo · I Etiquetas
+J Color miniatura · K Texto miniatura · L Audios · M Video Final URL · N Fecha
 ```
 
-En la pestaña de Shorts esto ya está hecho y funcionando.
+Eso no rompe el prompt, porque usa `{{1.`2`}}` (Tema, C) y `{{1.`3`}}`
+(Concepto, D), que están antes de la inserción. Pero sí corrió los mapeos
+del módulo de Google Sheets (ver Trampas).
+
+Falta todavía la columna **`Titulos Usados`** para el anti-repetición, con
+la fórmula apuntando a la columna del Título SEO:
+
+```
+=ARRAYFORMULA(IF(A2:A<>""; TEXTJOIN(CHAR(10); TRUE; $G$2:$G); ""))
+```
+
+Su índice para el prompt hay que contarlo sobre el layout de arriba, no
+sobre el viejo. En la pestaña de Shorts esto ya está hecho y funcionando.
 
 ### 2. El prompt de video largo no genera los campos de SEO
 
@@ -70,12 +77,21 @@ En el prompt, `{{TITULOS_YA_USADOS}}` va reemplazado por **`{{1.`15`}}`**
 Que los Text parsers capturen las 4 líneas `META` nuevas y que el Body las
 mande.
 
-### 4. Automatización D: título y escritura de vuelta
+### 4. Automatización D: arreglos sueltos en el módulo de Sheets
 
-- **YouTube → Upload a Video**: el título tiene que salir de `titulo_seo`.
-- **Google Sheets → Update a Row**: tiene que escribir el título en la
-  columna L. **Sin esto la columna P queda siempre vacía y el
-  anti-repetición no se activa nunca**, aunque el prompt esté perfecto.
+- `Use column headers as IDs` → **Yes**, y después revisar los mapeos: al
+  haber insertado columnas, varios quedaron corridos de posición.
+- `Color miniatura` está recibiendo `2. url_video`; debería ser
+  `2. color_miniatura`.
+- Agregar una **segunda ruta con filtro `estado = error`**, para que los
+  renders fallidos dejen rastro en vez de descartarse en silencio.
+- El **Update a Row tiene que escribir el Título SEO** en su columna. Sin
+  eso, la columna `Titulos Usados` queda siempre vacía y el
+  anti-repetición no se activa nunca, aunque el prompt esté perfecto.
+
+El filtro `estado` ya está arreglado (comparaba contra `Completado` con
+mayúscula y descartaba todo), y el `Row number` ya usa `fila_hoja`, que es
+el correcto.
 
 ### 5. `texto_miniatura` llega roto desde el Text parser
 
@@ -100,6 +116,39 @@ completo ni "Fallback Match". El código ya lo sanea con
 ---
 
 ## Trampas conocidas (no revertir sin leer esto)
+
+- **Hay DOS `estado` distintos y no son el mismo.** El del *payload* del
+  webhook lo escribe `app.py` y va siempre en **minúscula**
+  (`completado`, `error`); es el que compara el filtro de la
+  Automatización D. El de la *columna B del Sheet* lo escribe el módulo
+  de Google Sheets con **`Completado`** en mayúscula y lo lee el Search
+  Rows de la Automatización C para elegir la próxima fila. Confundirlos
+  cuesta caro: el filtro de D estuvo comparando contra `Completado` y
+  descartó en silencio cada webhook, así que la automatización de largos
+  entera nunca corrió. Y si se pasan los `Pendiente` del Sheet a
+  minúscula, la Automatización C deja de encontrar filas.
+- **La Automatización D descarta los errores en silencio.** Su filtro
+  solo deja pasar `estado = completado`, pero el código también dispara
+  el webhook cuando falla, con `estado = error` y el detalle. Hoy esos
+  avisos se pierden: conviene una segunda ruta con filtro `estado =
+  error` que los registre.
+- **En el módulo de Google Sheets, `Use column headers as IDs` está en
+  `No`**, o sea que Make identifica las columnas **por posición**. Al
+  insertar columnas en el medio, los valores mapeados se quedan pegados a
+  la posición vieja y terminan en la columna equivocada — así fue como
+  `Color miniatura` quedó recibiendo `url_video`. Conviene ponerlo en
+  `Yes` y revisar los mapeos uno por uno.
+- **YouTube exige `tags` para subir.** Si llega vacío, el módulo de
+  Upload corta la ejecución y no se sube nada ni se registra nada. El
+  código ya completa título, etiquetas y descripción cuando el guion no
+  los trae, pero es un piso, no SEO.
+- **Los dos flujos parsean distinto, a propósito.** Shorts usa un módulo
+  **JSON → Parse JSON** (el prompt devuelve JSON), así que los campos
+  viajan mapeados y es el flujo más robusto. Video largo usa cuatro
+  **Text parser** sobre el formato de texto plano `META|clave|valor`.
+  Unificar largo a JSON sería mejor, pero implica rehacer la cadena
+  entera de la Automatización C — es deuda técnica asumida, no un
+  pendiente para hacer al pasar.
 
 - **Cada personaje necesita DOS dibujos y no son intercambiables.** El de
   Shorts es la escena de consultorio entera (diván, cuadro, fondo crema) y
@@ -135,6 +184,30 @@ completo ni "Fallback Match". El código ya lo sanea con
 ---
 
 ## Ya resuelto (para no rehacerlo)
+
+**Los subtítulos se desfasaban de a poco.** El síntoma era "arranca bien y
+a los dos minutos ya no acompaña a quien habla". `obtener_duracion` leía la
+duración **declarada por el contenedor** del MP3, pero lo que suena es el
+audio **decodificado**, y difieren ~44 ms por archivo. Sobre 142 líneas eso
+daba +5,46 s acumulados; a los 2 minutos ya era ~1,5 s, casi un turno de
+diálogo. Ahora cada línea se decodifica a WAV (con su ganancia) y la
+duración se mide ahí, donde es exacta y es el mismo archivo que se
+concatena. Verificado en video real: el diálogo acompaña a los personajes.
+
+Dos hipótesis que se descartaron midiendo, para que nadie las repita: (1)
+que el emparejado de volumen introdujera desfase — 0,000 s sobre 20 líneas;
+(2) que el demuxer `concat` corriera el video una línea. Esta segunda llegó
+a "medirse" como cierta, pero era un **error del banco de pruebas**: los
+colores que identificaban cada cuadro estaban separados por 8 y la
+tolerancia era 12, así que siempre matcheaba el índice anterior. Con
+colores separados: 0/30 líneas mal, desvío máximo 1 cuadro. El armado de
+video estaba bien.
+
+**Respaldos de SEO en el código.** `titulo_para_youtube`,
+`etiquetas_para_youtube` y `descripcion_para_youtube` completan esos campos
+con el tema y el concepto de la fila cuando el guion no los trae,
+respetando los límites de YouTube (100 caracteres el título, 500 las
+etiquetas). Es lo que evita que un campo faltante tumbe el pipeline entero.
 
 **Render de video largo: de +1 hora a ~30 s.** Los personajes entraban al
 filtro con `-loop 1`, o sea como stream infinito, así que el `scale` +
