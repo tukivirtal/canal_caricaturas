@@ -86,10 +86,13 @@ completo ni "Fallback Match". El código ya lo sanea con
 
 ### 6. Ajustes de contenido en los prompts
 
-- `texto_miniatura` pide "2 a 4 palabras" y prohíbe el signo de pregunta.
-  Con 4 palabras el título se va a dos renglones y achica la fila de
-  personajes; y las miniaturas del nicho usan pregunta casi siempre. Pedir
-  **2 o 3 palabras** y **permitir el `?`** (el `!` sí conviene evitarlo).
+- `texto_miniatura`: el prompt de **video largo** pide "máx 6 palabras" y el
+  de **Shorts** pide "2 a 4", y los dos prohíben el signo de pregunta.
+  Confirmado en el primer video real: salió *"El domingo que te come vivo"*,
+  6 palabras, que en la miniatura se parte en dos renglones y achica la fila
+  de personajes. Pedir **2 o 3 palabras** en los dos prompts, y **permitir
+  el `?`** (el `!` sí conviene seguir evitándolo) porque las miniaturas de
+  referencia del nicho son preguntas casi siempre.
 - Decidir si el Doctor unifica voz entre Shorts y largos. Hoy tiene dos
   IDs distintos porque una sonaba baja — con el volumen ya emparejado eso
   dejó de ser una razón, así que se puede elegir por cómo suena.
@@ -118,6 +121,16 @@ completo ni "Fallback Match". El código ya lo sanea con
   dependa del cuadro (scale, colorkey, overlay) se recalcula miles de
   veces sobre imágenes idénticas. Todo lo que sea por imagen se precomputa
   una vez; el render solo codifica.
+- **El personaje pisa el pasto y el subtítulo le cruza las piernas: es
+  deliberado.** Los dos se disputan la franja de abajo, no se puede tener
+  las dos cosas. Se probó subir al personaje (12% de margen) para despejar
+  el renglón y quedaba flotando sobre el piso, que se nota mucho más. Las
+  piernas son líneas finas y el contorno negro del texto alcanza para
+  leerse encima. Si alguien vuelve a subirlo, va a reintroducir el flote.
+- **Los subtítulos se cronometran sobre el orden de render, no sobre el
+  orden de llegada.** El video agrupa por escena; si la línea de tiempo de
+  subtítulos recorre otra secuencia, el texto de un personaje aparece
+  mientras en pantalla está el otro.
 
 ---
 
@@ -147,9 +160,21 @@ dejar la cara del personaje transparente.
 **Subtítulos.** El estilo pedía `Arial`, que no está en `python:3.11-slim`;
 libass caía a cualquier fuente y el render cambiaba entre rebuilds. Ahora el
 Dockerfile instala `fonts-dejavu-core` y se pide `DejaVu Sans` en negrita.
-En largo la fuente pasó de 30px a 45px sobre 1080p. Y el personaje bajó a
-80% del alto con 12% de margen para que el renglón no le caiga sobre las
-piernas.
+En largo la fuente pasó de 30px a 45px sobre 1080p, con contorno 4.
+
+**Subtítulos sincronizados con lo que se ve.** El video se arma agrupando
+las líneas por escena y concatenando las escenas en orden ascendente, pero
+la línea de tiempo de subtítulos se calculaba sobre el orden en que las
+líneas habían llegado de Make. Si el guion no venía perfectamente agrupado,
+las dos secuencias divergían y el subtítulo mostraba la línea de un
+personaje mientras en pantalla estaba el otro (visto en el primer video
+real). Ahora se cronometra sobre la misma secuencia que se renderiza, así
+que no depende de cómo llegue el guion.
+
+Descartado en el camino: se sospechó que el emparejado de volumen
+introducía desfase, porque las duraciones se miden sobre el MP3 y el audio
+concatenado es el WAV normalizado. Medido sobre 20 líneas: 0,000 s. No era
+eso.
 
 **Volumen emparejado entre personajes.** Las voces de ElevenLabs entregan a
 niveles muy distintos (medido: 18 dB) y YouTube atenúa lo fuerte pero no
