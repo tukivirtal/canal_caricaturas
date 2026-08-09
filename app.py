@@ -1263,10 +1263,22 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             tiempo_acumulado += item["duracion"]
 
         # Fase 4: concatenar el audio de cada escena en una sola pista.
+        #
+        # De paso se anota qué fondo le tocó a cada escena. Los números de
+        # escena los elige el guion, y si no vienen como 1,2,3,4 el reparto
+        # de fondos cambia sin que se note: un dibujo puede no aparecer
+        # nunca y desde afuera parece que el código lo ignora.
         escenas_render = []
+        reparto_escenas = []
         for numero_escena in sorted(escenas.keys()):
             lineas_escena = escenas[numero_escena]
-            ruta_fondo = fondos_escena[(numero_escena - 1) % len(IMAGENES_ESCENAS_PARQUE)]
+            indice_fondo = (numero_escena - 1) % len(IMAGENES_ESCENAS_PARQUE)
+            ruta_fondo = fondos_escena[indice_fondo]
+            reparto_escenas.append({
+                "escena": numero_escena,
+                "lineas": len(lineas_escena),
+                "fondo": IMAGENES_ESCENAS_PARQUE[indice_fondo].rsplit("/", 1)[-1],
+            })
 
             ruta_audio_escena = os.path.join(work_dir, f"audio_escena_{numero_escena}.wav")
             concatenar_segmentos(
@@ -1367,6 +1379,7 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             "fila_hoja": int(fila) + 1,
             "lineas_saltadas": lineas_saltadas,
             "avisos_audio": avisos_audio,
+            "reparto_escenas": reparto_escenas,
             **metadata,
         }
         actualizar_estado(**resultado)
