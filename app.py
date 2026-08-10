@@ -75,6 +75,28 @@ PERSONAJE_IMAGEN_VIDEO_LARGO = {
     "JULI": "JULI_LARGO",
 }
 
+# Voces de ElevenLabs por personaje, para sintetizar el audio acá en vez
+# de pedírselo a Make.
+#
+# Make cobra por operación, y hacer la síntesis allá cuesta 3-4
+# operaciones POR LÍNEA de diálogo (elegir la voz, buscar el Voice_ID,
+# llamar a ElevenLabs, subir el audio a Cloudinary). Un guion de 142
+# líneas se come 400-570 operaciones; sintetizando acá, el video entero
+# sale por menos de 10. Y el paso por Cloudinary desaparece: el render
+# solo necesita los audios en disco.
+#
+# El gasto de ElevenLabs no cambia — factura por caracteres, no por
+# llamada.
+VOCES_ELEVENLABS = {
+    "DOCTOR": "HQpgMW8Ge2z0VbRObe6q",
+    "JUAN": "xMJx4r6gDNw8TRLAPrI7",
+    "MARIA": "ApVAuUin4poWzufuvK44",
+    "FABRICIO": "sZZQhJBoI66hYDRWpJqm",
+    "JULI": "FATQNOPvjI2pMF1A8M2D",
+}
+ELEVENLABS_API_KEY = os.environ.get("ELEVENLABS_API_KEY")
+ELEVENLABS_MODELO = os.environ.get("ELEVENLABS_MODELO", "eleven_multilingual_v2")
+
 CLOUDINARY_CLOUD_NAME = os.environ.get("CLOUDINARY_CLOUD_NAME", "ddbjsjmzj")
 CLOUDINARY_API_KEY = os.environ.get("CLOUDINARY_API_KEY")
 CLOUDINARY_API_SECRET = os.environ.get("CLOUDINARY_API_SECRET")
@@ -197,6 +219,48 @@ def descargar_archivo(url, destino, intentos=3):
             with open(destino, "wb") as f:
                 for chunk in r.iter_content(chunk_size=8192):
                     f.write(chunk)
+            return
+        except (requests.RequestException, OSError):
+            if intento == intentos:
+                raise
+
+
+def sintetizar_voz(texto, voice_id, destino, intentos=3):
+    """
+    Genera el audio de una línea con ElevenLabs y lo deja en 'destino'.
+
+    Mismo criterio de reintentos que descargar_archivo: con decenas de
+    líneas en paralelo, que una conexión se corte es cuestión de tiempo y
+    no debería tumbar el render entero.
+    """
+    if not ELEVENLABS_API_KEY:
+        raise RuntimeError(
+            "Falta ELEVENLABS_API_KEY. Se necesita para sintetizar las voces "
+            "acá en vez de en Make; sin eso, las líneas tienen que venir con "
+            "'audio_url' ya resuelto."
+        )
+
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    cabeceras = {"xi-api-key": ELEVENLABS_API_KEY, "accept": "audio/mpeg"}
+    cuerpo = {"text": texto, "model_id": ELEVENLABS_MODELO}
+
+    for intento in range(1, intentos + 1):
+        try:
+            r = requests.post(url, headers=cabeceras, json=cuerpo, timeout=120)
+            # 429 y 5xx son pasajeros (cuota momentánea, hipo del
+            # servicio) y vale reintentarlos. Un 401 por key inválida o un
+            # 422 por voz inexistente no se arreglan solos: mejor fallar
+            # de una con el mensaje real que insistir tres veces.
+            if r.status_code == 429 or r.status_code >= 500:
+                raise requests.RequestException(
+                    f"ElevenLabs devolvió {r.status_code}: {r.text[:200]}"
+                )
+            if r.status_code >= 400:
+                raise RuntimeError(
+                    f"ElevenLabs rechazó la síntesis ({r.status_code}): {r.text[:300]}"
+                )
+            with open(destino, "wb") as f:
+                f.write(r.content)
             return
         except (requests.RequestException, OSError):
             if intento == intentos:
@@ -1156,16 +1220,23 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             except ValueError:
                 numero_escena = 1
 
-            if imagen_clave not in IMAGENES_PERSONAJES or not audio_url:
+            # La línea sirve si trae el audio ya resuelto (modo viejo, Make
+            # sintetiza) o si podemos sintetizarlo acá a partir del texto.
+            se_puede_sintetizar = bool(
+                texto and ELEVENLABS_API_KEY and hablante in VOCES_ELEVENLABS
+            )
+            if imagen_clave not in IMAGENES_PERSONAJES or not (audio_url or se_puede_sintetizar):
                 lineas_saltadas.append(
                     f"línea {idx} (hablante='{hablante}', audio_url='{audio_url}', "
+                    f"texto={'sí' if texto else 'no'}, "
+                    f"voz_conocida={hablante in VOCES_ELEVENLABS}, "
                     f"claves_recibidas={list(linea.keys())})"
                 )
                 continue
 
             lineas_validas.append({
                 "idx": idx, "imagen_clave": imagen_clave, "audio_url": audio_url,
-                "texto": texto, "numero_escena": numero_escena,
+                "hablante": hablante, "texto": texto, "numero_escena": numero_escena,
             })
 
         if not lineas_validas:
@@ -1200,18 +1271,33 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
 
         actualizar_estado(job_id, estado="descargando_audios")
 
-        # Fase 2: descargar todos los audios en paralelo (independientes
-        # entre sí), medir su duración y su loudness.
-        def _descargar_audio_linea(item):
+        # Fase 2: resolver el audio de cada línea en paralelo (son
+        # independientes entre sí) y medir su duración y su loudness.
+        #
+        # Si la línea trae 'audio_url', se descarga (Make lo sintetizó).
+        # Si no, se sintetiza acá: es lo que evita las 3-4 operaciones de
+        # Make por línea (ver VOCES_ELEVENLABS).
+        sintetizadas = 0
+        contador_sintesis = threading.Lock()
+
+        def _resolver_audio_linea(item):
+            nonlocal sintetizadas
             audio_path = os.path.join(work_dir, f"audio_{item['idx']}.mp3")
-            descargar_archivo(item["audio_url"], audio_path)
+            if item["audio_url"]:
+                descargar_archivo(item["audio_url"], audio_path)
+            else:
+                sintetizar_voz(
+                    item["texto"], VOCES_ELEVENLABS[item["hablante"]], audio_path
+                )
+                with contador_sintesis:
+                    sintetizadas += 1
             item["audio_path"] = audio_path
             item["duracion"] = obtener_duracion(audio_path)
             item["lufs"] = medir_loudness(audio_path)
             return item
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=6) as executor:
-            lineas_validas = list(executor.map(_descargar_audio_linea, lineas_validas))
+            lineas_validas = list(executor.map(_resolver_audio_linea, lineas_validas))
 
         # Fase 2b: emparejar el volumen de los personajes entre sí. Cada
         # voz de ElevenLabs entrega a un nivel distinto, y el que entrega
@@ -1380,6 +1466,10 @@ def procesar_video_largo(job_id, lineas, fila, metadata, webhook_url):
             "lineas_saltadas": lineas_saltadas,
             "avisos_audio": avisos_audio,
             "reparto_escenas": reparto_escenas,
+            # Cuántas líneas se sintetizaron acá en vez de venir de Make.
+            # Es la forma de confirmar que el ahorro de operaciones está
+            # ocurriendo: si sale 0, Make sigue haciendo el trabajo caro.
+            "lineas_sintetizadas": sintetizadas,
             **metadata,
         }
         actualizar_estado(**resultado)
