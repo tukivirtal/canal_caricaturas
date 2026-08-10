@@ -3,6 +3,11 @@
 Contexto para retomar el trabajo en una sesión nueva.
 Repo: `tukivirtal/canal_caricaturas`. Canal: <https://www.youtube.com/@eldivanterapia>
 
+**Dónde está cada cosa:** este archivo es el estado del pipeline (qué falta,
+qué ya se resolvió, qué trampas hay). `ESTRATEGIA.md` es hacia dónde va el
+canal y por qué: costos, rediseño del formato, y qué hacer con los videos
+publicados.
+
 ## Cómo está armado
 
 ```
@@ -32,7 +37,37 @@ campos suelen tener la respuesta.
 
 ---
 
-## Pendiente — todo en Make y Sheets, nada de código
+## ⏸ EN CURSO: migrar la síntesis de voz de Make al servicio
+
+**Este es el trabajo a medio hacer. Leer esto antes que nada.**
+
+El código ya sabe sintetizar las voces por su cuenta (`sintetizar_voz`,
+`VOCES_ELEVENLABS`), y la `ELEVENLABS_API_KEY` ya está cargada en el `.env`
+del Codespace y desplegada. **Falta migrar Make**, que todavía hace la
+síntesis y por eso sigue gastando 3-4 operaciones por línea.
+
+El cambio es compatible hacia atrás: si la línea trae `audio_url` se
+descarga como siempre, y solo se sintetiza cuando no viene. Así que hoy
+todo funciona igual que antes, pero sin el ahorro.
+
+Los dos pasos que faltan, **en este orden**:
+
+1. En el Body del HTTP de la Automatización C, **sacar `audio_url`** de
+   cada línea. Correr y verificar que `lineas_sintetizadas` del webhook
+   pase de `0` al total de líneas.
+2. Con eso confirmado, **borrar los módulos ElevenLabs y Cloudinary del
+   iterador**. Ahí ocurre el ahorro real: de ~500 operaciones por video
+   largo a menos de 10.
+
+Hacerlo al revés (borrar los módulos primero) impide distinguir si un
+fallo viene de la síntesis o del Body.
+
+`lineas_sintetizadas` es el testigo: `0` significa que Make sigue haciendo
+el trabajo caro.
+
+---
+
+## Pendiente — el resto es todo en Make y Sheets, nada de código
 
 ### 1. Columnas de SEO en la pestaña de videos largos — HECHO, con secuela
 
