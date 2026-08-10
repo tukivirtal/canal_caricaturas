@@ -109,11 +109,45 @@ completo ni "Fallback Match". El código ya lo sanea con
   de personajes. Pedir **2 o 3 palabras** en los dos prompts, y **permitir
   el `?`** (el `!` sí conviene seguir evitándolo) porque las miniaturas de
   referencia del nicho son preguntas casi siempre.
+- **Falta `#shorts` en los hashtags del prompt de Shorts.** Ayuda a que
+  YouTube clasifique el video en la superficie correcta, y hoy no se
+  genera. Debería ir primero de la lista.
+- **Bajar el largo del guion de 110-140 líneas a 70-90** (ver la sección de
+  costos): corta a la mitad las operaciones de Make y mejora el ritmo.
 - Decidir si el Doctor unifica voz entre Shorts y largos. Hoy tiene dos
   IDs distintos porque una sonaba baja — con el volumen ya emparejado eso
   dejó de ser una razón, así que se puede elegir por cómo suena.
+- **Poner validación de datos en la columna `Estado`** (lista desplegable
+  `Pendiente` / `Completado`). Una vez se escribió `Pendiete` a mano y esa
+  fila quedó invisible para el Search Rows, sin error en ningún lado. Es la
+  misma familia de fallo que el filtro `Completado`: comparaciones de texto
+  exactas que fallan calladas.
 
 ---
+
+## Cuánto cuesta cada video en operaciones de Make
+
+El costo escala **por línea de diálogo**, no por video, porque ElevenLabs y
+Cloudinary corren una vez por línea:
+
+| | Operaciones aprox. |
+|---|---|
+| Short (~20 líneas) | ~45 |
+| Video largo (142 líneas) | ~290 |
+
+Un video largo cuesta lo mismo que seis Shorts. En 20 días se consumieron
+10.000 operaciones de una suscripción paga, y hay dos causas:
+
+1. **Las corridas fallidas gastan igual.** Toda la depuración (el filtro
+   que bloqueaba, YouTube cortando por `tags`, la fórmula de ElevenLabs
+   mandada como texto) consumió operaciones sin producir nada.
+2. **El prompt pide 110-140 líneas** para 8-10 minutos, o sea turnos de
+   ~4 segundos. Bajarlo a **70-90 líneas** con turnos más largos corta el
+   costo casi a la mitad, y probablemente mejore el ritmo: el ping-pong
+   muy picado cansa en formato largo.
+
+Ese segundo punto es el lever real de escala: es cambiar un número en el
+prompt y duplicar la cantidad de videos por suscripción.
 
 ## Trampas conocidas (no revertir sin leer esto)
 
@@ -182,6 +216,39 @@ completo ni "Fallback Match". El código ya lo sanea con
   mientras en pantalla está el otro.
 
 ---
+
+## Banco de temas sin usar
+
+Verificados contra las 18 filas de Shorts y las 2 de largos: ningún tema ni
+concepto se repite. Los conceptos son reales y documentados, que es lo que
+el prompt exige para el remate.
+
+**Para video largo** (necesitan aguantar que 3 personas los cuenten desde
+ángulos distintos; si el tema es muy puntual, los tres dicen lo mismo):
+
+| Tema | Concepto |
+|---|---|
+| Tener 40 pestañas abiertas y no poder cerrar ninguna porque "las voy a leer" | Atención residual |
+| Ver una serie con el celular en la mano y no enterarte de ninguna de las dos | Costo de cambio de tarea |
+| Postergar pedir un turno médico por miedo a lo que te digan | Evitación experiencial |
+| Comprar para la versión de vos que empieza el lunes: el kit, el curso, los libros | Descuento hiperbólico |
+| No poder descansar sin sentir que deberías estar produciendo | Aversión a la inactividad |
+
+**Para Shorts** (micro-conductas concretas que se entienden en el primer
+segundo, no temas amplios):
+
+| Persona | Dolor Moderno | Concepto |
+|---|---|---|
+| Juli | Quedarte despierto hasta las 2 cayéndote de sueño, solo para tener un rato tuyo | Procrastinación del sueño por venganza |
+| Fabricio | Buscar el celular por toda la casa teniéndolo en la mano | Ceguera por desatención |
+| Juli | Pausar la película cada cinco minutos para buscar de dónde conocés al actor | Intolerancia a la incertidumbre |
+| Fabricio | Escuchar un audio de cuatro minutos a doble velocidad y aun así impacientarte | Intolerancia a la frustración |
+| Juli | Sentir que todos los demás tienen su vida más resuelta que vos | Ignorancia pluralista |
+
+Ojo con *ignorancia pluralista*: es distinta del síndrome del impostor (que
+ya se usó). Aquella es sobre la propia competencia; esta es sobre creerse
+el único perdido mientras se asume que el resto la tiene clara. Da buen
+remate: la persona con la que te comparás piensa lo mismo de vos.
 
 ## Ya resuelto (para no rehacerlo)
 
